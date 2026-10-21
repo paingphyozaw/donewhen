@@ -65,7 +65,16 @@
 		const dec = decisions.filter((d) => ids.has(d.issueId));
 		const decCount = new Map();
 		for (const d of dec) decCount.set(d.issueId, (decCount.get(d.issueId) || 0) + 1);
-		return { shown, blocks, dec, unblocks, decCount };
+		// Each epic is an island: its tickets gather around their own anchor.
+		const groupOf = new Map(); // node id → epic id ('' = no epic)
+		const groups = new Map(); // epic id → ticket ids
+		for (const i of shown) {
+			const g = i.projectId || '';
+			groupOf.set(i.id, g);
+			(groups.get(g) || groups.set(g, []).get(g)).push(i.id);
+		}
+		for (const d of dec) groupOf.set('d' + d.id, groupOf.get(d.issueId));
+		return { shown, blocks, dec, unblocks, decCount, groupOf, groups };
 	});
 
 	// Positions live outside the reactive model so a re-filter keeps the dots
@@ -75,11 +84,22 @@
 	let alpha = 0;
 	let raf = 0;
 
+	// Epic anchors on a ring, the largest epic first; tickets with no epic in the middle.
+	let anchors = new Map();
+	function placeAnchors(groups) {
+		const named = [...groups.entries()].filter(([g]) => g).sort((a, b) => b[1].length - a[1].length);
+		const ring = named.length > 1 ? 120 + 45 * named.length : 0;
+		anchors = new Map([['', { x: 0, y: 0 }]]);
+		named.forEach(([g], k) => {
+			const a = (k / named.length) * Math.PI * 2 - Math.PI / 2;
+			anchors.set(g, { x: Math.cos(a) * ring * 1.3, y: Math.sin(a) * ring });
+		});
+	}
 	function seed(id, near) {
 		if (pos.has(id)) return;
-		const p = near && pos.get(near);
-		const a = Math.random() * Math.PI * 2, r = p ? 30 : 160 * Math.sqrt(Math.random());
-		pos.set(id, { x: (p?.x || 0) + Math.cos(a) * r, y: (p?.y || 0) + Math.sin(a) * r, vx: 0, vy: 0, fixed: false });
+		const p = (near && pos.get(near)) || anchors.get(model.groupOf.get(id) || '') || { x: 0, y: 0 };
+		const a = Math.random() * Math.PI * 2, r = near ? 30 : 60 * Math.sqrt(Math.random());
+		pos.set(id, { x: p.x + Math.cos(a) * r, y: p.y + Math.sin(a) * r, vx: 0, vy: 0, fixed: false });
 	}
 
 	function stepLayout() {
@@ -88,7 +108,7 @@
 			...m.shown.map((i) => ({ id: i.id, w: 1 })),
 			...m.dec.map((d) => ({ id: 'd' + d.id, w: 0.35 }))
 		];
-		const P = nodes.map((n) => pos.get(n.id)).filter(Boolean);
+		const P = nodes.map((n) => pos.get(n.id) || { x: 0, y: 0, vx: 0, vy: 0, fixed: true });
 		// repulsion: every pair pushes apart, stronger when close
 		for (let i = 0; i < P.length; i++) {
 			const a = P[i];
@@ -98,7 +118,7 @@
 				let d2 = dx * dx + dy * dy;
 				if (d2 > 90000) continue;
 				if (d2 < 1) (dx = Math.random() - 0.5, dy = Math.random() - 0.5, (d2 = 1));
-				const f = (900 / d2) * alpha;
+				const f = (500 / d2) * alpha;
 				a.vx += dx * f; a.vy += dy * f;
 				b.vx -= dx * f; b.vy -= dy * f;
 			}
@@ -114,10 +134,12 @@
 		};
 		for (const l of m.blocks) spring(l.blockerId, l.issueId, 70, 0.08);
 		for (const d of m.dec) spring(d.issueId, 'd' + d.id, 26, 0.3);
-		// gravity keeps lone tickets near the middle
-		for (const p of P) {
-			p.vx -= p.x * 0.03 * alpha;
-			p.vy -= p.y * 0.03 * alpha;
+		// each ticket is pulled to its epic's anchor, so epics form islands
+		for (let i = 0; i < P.length; i++) {
+			const p = P[i];
+			const an = anchors.get(m.groupOf.get(nodes[i].id) || '') || { x: 0, y: 0 };
+			p.vx -= (p.x - an.x) * 0.06 * alpha;
+			p.vy -= (p.y - an.y) * 0.06 * alpha;
 			if (p.fixed) (p.vx = 0), (p.vy = 0);
 			p.x += p.vx;
 			p.y += p.vy;
@@ -147,6 +169,7 @@
 		const m = model;
 		// The layout writes `frame`; untracked, so it never re-runs this effect.
 		untrack(() => {
+			placeAnchors(m.groups);
 			for (const l of m.blocks) (seed(l.blockerId), seed(l.issueId, l.blockerId));
 			for (const i of m.shown) seed(i.id);
 			for (const d of m.dec) seed('d' + d.id, d.issueId);
@@ -163,19 +186,40 @@
 	let litKeys = $state(null); // Set of keys on a Next-up chain
 	const byKey = $derived(new Map($allIssues.map((i) => [i.key, i])));
 	const nextIds = $derived(new Set(next.map((n) => n.id)));
+	let focusId = $state(''); // the ticket found by search, lit until cleared
 	const neighbours = $derived.by(() => {
-		if (!hover) return null;
-		const s = new Set([hover]);
+		const f = hover || focusId;
+		if (!f) return null;
+		const s = new Set([f]);
 		for (const l of model.blocks) {
-			if (l.issueId === hover) s.add(l.blockerId);
-			if (l.blockerId === hover) s.add(l.issueId);
+			if (l.issueId === f) s.add(l.blockerId);
+			if (l.blockerId === f) s.add(l.issueId);
 		}
 		return s;
 	});
+	let query = $state('');
+	function find() {
+		const q = query.trim().toLowerCase();
+		if (!q) return (focusId = '');
+		const hit =
+			model.shown.find((i) => i.key.toLowerCase() === q) ||
+			model.shown.find((i) => i.key.toLowerCase().includes(q) || i.title.toLowerCase().includes(q));
+		if (!hit || !view) return (focusId = '');
+		focusId = hit.id;
+		const p = pos.get(hit.id), r = view.getBoundingClientRect();
+		userMoved = true;
+		zoom = Math.max(zoom, 1.2);
+		tx = r.width / 2 - p.x * zoom;
+		ty = r.height / 2 - p.y * zoom;
+	}
+	function searchKey(e) {
+		if (e.key === 'Enter') find();
+		else if (e.key === 'Escape') ((query = ''), (focusId = ''));
+	}
 	const litIds = $derived(litKeys ? new Set([...litKeys].map((k) => byKey.get(k)?.id).filter(Boolean)) : null);
 	const isDim = (id) => (neighbours && !neighbours.has(id)) || (litIds && !litIds.has(id));
 	const edgeLit = (l) =>
-		(neighbours && (l.issueId === hover || l.blockerId === hover)) || (litIds && litIds.has(l.issueId) && litIds.has(l.blockerId));
+		(neighbours && (l.issueId === (hover || focusId) || l.blockerId === (hover || focusId))) || (litIds && litIds.has(l.issueId) && litIds.has(l.blockerId));
 
 	// ── pan, zoom, drag a dot ───────────────────────────────────────────
 	let view = $state(null);
@@ -261,7 +305,7 @@
 		}
 		// Leave room for the labels, and for the legend along the bottom.
 		const r = view.getBoundingClientRect();
-		const top = 24, bottom = 84, side = 48;
+		const top = 44, bottom = 84, side = 48;
 		const w = x1 - x0 || 1, h = y1 - y0 || 1;
 		zoom = clampZoom(Math.min(1.6, (r.width - 2 * side) / w, (r.height - top - bottom) / h));
 		tx = r.width / 2 - ((x0 + x1) / 2) * zoom;
@@ -271,7 +315,7 @@
 		if (e.key === '+' || e.key === '=') step(1.2);
 		else if (e.key === '-') step(1 / 1.2);
 		else if (e.key === '0') fit();
-		else if (e.key === 'Escape') litKeys = null;
+		else if (e.key === 'Escape') ((litKeys = null), (focusId = ''), (query = ''));
 	}
 
 	// ── what a dot shows ────────────────────────────────────────────────
@@ -289,6 +333,26 @@
 		const ra = radius(l.blockerId) + 2, rb = radius(l.issueId) + 5;
 		return { x1: a.x + (dx / d) * ra, y1: a.y + (dy / d) * ra, x2: b.x - (dx / d) * rb, y2: b.y - (dy / d) * rb };
 	}
+	// The box around each epic's island, with its name on top.
+	const hulls = $derived.by(() => {
+		frame;
+		if (epic || model.groups.size < 2) return [];
+		const out = [];
+		for (const [g, ids] of model.groups) {
+			if (!g) continue;
+			let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+			for (const id of ids) {
+				const p = pos.get(id);
+				if (!p) continue;
+				const r = radius(id);
+				x0 = Math.min(x0, p.x - r); y0 = Math.min(y0, p.y - r);
+				x1 = Math.max(x1, p.x + r + 44); y1 = Math.max(y1, p.y + r);
+			}
+			if (x0 === Infinity) continue;
+			out.push({ id: g, name: $projects.find((p) => p.id === g)?.name || 'Epic', x: x0 - 16, y: y0 - 30, w: x1 - x0 + 32, h: y1 - y0 + 46 });
+		}
+		return out;
+	});
 	const hoverIssue = $derived(hover ? $allIssues.find((i) => i.id === hover) : null);
 	const waitsOn = (id) => model.blocks.filter((l) => l.issueId === id && !l.done).length;
 	const shownStates = $derived($states.filter((s) => $allIssues.some((i) => i.stateId === s.id)));
@@ -314,6 +378,15 @@
 			<option value="">All epics</option>
 			{#each $projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
 		</select>
+		<input
+			class="input find"
+			type="search"
+			placeholder="Find a ticket…"
+			aria-label="Find a ticket"
+			bind:value={query}
+			oninput={find}
+			onkeydown={searchKey}
+		/>
 		<span class="spacer"></span>
 		<span class="count">{model.shown.length} tickets · {model.blocks.length} links · {model.dec.length} decisions</span>
 	</div>
@@ -343,6 +416,10 @@
 						<marker id="ng-lit" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L8,4 L0,8 z" class="ah lit" /></marker>
 					</defs>
 					<g transform="translate({tx} {ty}) scale({zoom})">
+						{#each hulls as h (h.id)}
+							<rect x={h.x} y={h.y} width={h.w} height={h.h} rx="14" class="hull" />
+							<text x={h.x + 12} y={h.y + 18} class="hl">{h.name}</text>
+						{/each}
 						{#if edgeMode !== 'blocks'}
 							{#each model.dec as d (d.id)}
 								{@const a = P(d.issueId)}
@@ -384,9 +461,10 @@
 								onmouseleave={() => (hover = '')}
 							>
 								{#if nextIds.has(i.id)}<circle cx={p.x} cy={p.y} r={r + 5} class="ring" />{/if}
+								{#if focusId === i.id}<circle cx={p.x} cy={p.y} r={r + 8} class="found" />{/if}
 								<circle cx={p.x} cy={p.y} {r} style:fill={st?.color || 'var(--line-strong)'} class="dot" />
-								{#if zoom > 0.7 || hover === i.id || nextIds.has(i.id)}
-									<text x={p.x} y={p.y + r + 12} class="lbl">{i.key}</text>
+								{#if zoom > 0.6 || hover === i.id || focusId === i.id || nextIds.has(i.id)}
+									<text x={p.x + r + 4} y={p.y + 3.5} class="lbl">{i.key}</text>
 								{/if}
 							</g>
 						{/each}
@@ -501,6 +579,9 @@
 		width: auto;
 		max-width: 220px;
 	}
+	.find {
+		width: 200px;
+	}
 	.count {
 		font-size: var(--t-xs);
 		color: var(--ink-3);
@@ -572,6 +653,11 @@
 	.nd:hover .dot {
 		stroke: var(--ink);
 	}
+	.found {
+		fill: none;
+		stroke: var(--accent);
+		stroke-width: 2.5;
+	}
 	.ring {
 		fill: none;
 		stroke: var(--accent);
@@ -581,8 +667,19 @@
 	.lbl {
 		font-family: var(--mono);
 		font-size: var(--t-xs);
+		fill: var(--ink-3);
+		pointer-events: none;
+	}
+	.hull {
+		fill: var(--sunken);
+		stroke: var(--line);
+		stroke-width: 1;
+	}
+	.hl {
+		font-size: var(--t-xs);
+		font-weight: 500;
 		fill: var(--ink-2);
-		text-anchor: middle;
+		letter-spacing: 0.02em;
 		pointer-events: none;
 	}
 	.dim {
