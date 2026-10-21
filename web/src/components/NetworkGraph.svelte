@@ -39,7 +39,8 @@
 		// Canceled work is noise on the map: hidden until asked for.
 		if (!statesInit && $states.length) {
 			statesInit = true;
-			hiddenStates = new Set($states.filter((s) => s.category === 'canceled').map((s) => s.id));
+			// Finished work is noise on the map: Done and Canceled start hidden.
+			hiddenStates = new Set($states.filter((s) => s.category === 'canceled' || s.category === 'completed').map((s) => s.id));
 		}
 	});
 	function toggleState(id) {
@@ -86,25 +87,38 @@
 
 	// Epic anchors on a ring, the largest epic first; tickets with no epic in the middle.
 	let anchors = new Map();
+	// Each epic (and the tickets with no epic) gets a circle sized to its
+	// tickets. The circles are packed so they never overlap: biggest in the
+	// middle, each next one at the free spot closest to the middle.
+	const circleR = (n) => 34 + 26 * Math.sqrt(n);
 	function placeAnchors(groups) {
-		const named = [...groups.entries()].filter(([g]) => g).sort((a, b) => b[1].length - a[1].length);
-		// Space the anchors so neighbouring circles (about 34·√n wide) do not touch.
-		const big = named.length ? 40 + 34 * Math.sqrt(named[0][1].length) : 0;
-		const k = named.length;
-		const ring = k > 1 ? Math.max(big * 1.6, (big + 30) / Math.sin(Math.PI / k)) : 0;
-		anchors = new Map([['', { x: 0, y: 0 }]]);
-		named.forEach(([g], i) => {
-			const a = (i / k) * Math.PI * 2 - Math.PI / 2;
-			anchors.set(g, { x: Math.cos(a) * ring, y: Math.sin(a) * ring });
-		});
+		const list = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+		const placed = [];
+		const gap = 28;
+		for (const [g, ids] of list) {
+			const r = circleR(ids.length);
+			let best = placed.length ? null : { x: 0, y: 0 };
+			for (const q of placed) {
+				for (let k = 0; k < 48; k++) {
+					const a = (k / 48) * Math.PI * 2;
+					const c = { x: q.x + Math.cos(a) * (q.r + r + gap), y: q.y + Math.sin(a) * (q.r + r + gap) };
+					if (placed.some((o) => Math.hypot(o.x - c.x, o.y - c.y) < o.r + r + gap - 0.5)) continue;
+					// Prefer a wide picture over a tall one: the screen is wide.
+					const score = Math.hypot(c.x / 1.4, c.y);
+					if (!best || score < best.score) best = { ...c, score };
+				}
+			}
+			placed.push({ g, x: best.x, y: best.y, r });
+		}
+		anchors = new Map(placed.map((c) => [c.g, c]));
 	}
 	function seed(id, near) {
 		if (pos.has(id)) return;
-		const p = (near && pos.get(near)) || anchors.get(model.groupOf.get(id) || '') || { x: 0, y: 0 };
-		const a = Math.random() * Math.PI * 2, r = near ? 30 : 60 * Math.sqrt(Math.random());
+		const an = anchors.get(model.groupOf.get(id) || '') || { x: 0, y: 0, r: 60 };
+		const p = (near && pos.get(near)) || an;
+		const a = Math.random() * Math.PI * 2, r = near ? 20 : an.r * 0.6 * Math.sqrt(Math.random());
 		pos.set(id, { x: p.x + Math.cos(a) * r, y: p.y + Math.sin(a) * r, vx: 0, vy: 0, fixed: false });
 	}
-
 	function stepLayout() {
 		const m = model;
 		const nodes = [
@@ -112,16 +126,18 @@
 			...m.dec.map((d) => ({ id: 'd' + d.id, w: 0.35 }))
 		];
 		const P = nodes.map((n) => pos.get(n.id) || { x: 0, y: 0, vx: 0, vy: 0, fixed: true });
-		// repulsion: every pair pushes apart, stronger when close
+		const G = nodes.map((n) => m.groupOf.get(n.id) || '');
+		// repulsion: tickets in the same circle push apart, stronger when close
 		for (let i = 0; i < P.length; i++) {
 			const a = P[i];
 			for (let j = i + 1; j < P.length; j++) {
+				if (G[i] !== G[j]) continue;
 				const b = P[j];
 				let dx = a.x - b.x, dy = a.y - b.y;
 				let d2 = dx * dx + dy * dy;
 				if (d2 > 90000) continue;
 				if (d2 < 1) (dx = Math.random() - 0.5, dy = Math.random() - 0.5, (d2 = 1));
-				const f = (500 / d2) * alpha;
+				const f = (320 / d2) * alpha;
 				a.vx += dx * f; a.vy += dy * f;
 				b.vx -= dx * f; b.vy -= dy * f;
 			}
@@ -135,19 +151,23 @@
 			a.vx += dx * f; a.vy += dy * f;
 			b.vx -= dx * f; b.vy -= dy * f;
 		};
-		for (const l of m.blocks) spring(l.blockerId, l.issueId, 70, 0.08);
+		// a link inside an epic pulls; one across epics barely does (the circles stay put)
+		for (const l of m.blocks)
+			spring(l.blockerId, l.issueId, 60, m.groupOf.get(l.blockerId) === m.groupOf.get(l.issueId) ? 0.08 : 0.004);
 		for (const d of m.dec) spring(d.issueId, 'd' + d.id, 26, 0.3);
-		// each ticket is pulled to its epic's anchor, so epics form islands
+		// each ticket is pulled to its circle's centre and never leaves the circle
 		for (let i = 0; i < P.length; i++) {
 			const p = P[i];
-			const an = anchors.get(m.groupOf.get(nodes[i].id) || '') || { x: 0, y: 0 };
-			p.vx -= (p.x - an.x) * 0.06 * alpha;
-			p.vy -= (p.y - an.y) * 0.06 * alpha;
+			const an = anchors.get(G[i]) || { x: 0, y: 0, r: 60 };
+			p.vx -= (p.x - an.x) * 0.02 * alpha;
+			p.vy -= (p.y - an.y) * 0.02 * alpha;
 			if (p.fixed) (p.vx = 0), (p.vy = 0);
 			p.x += p.vx;
 			p.y += p.vy;
 			p.vx *= 0.6;
 			p.vy *= 0.6;
+			const dx = p.x - an.x, dy = p.y - an.y, d = Math.hypot(dx, dy), max = an.r - 18;
+			if (d > max) (p.x = an.x + (dx / d) * max), (p.y = an.y + (dy / d) * max);
 		}
 	}
 
@@ -340,23 +360,28 @@
 		const ra = radius(l.blockerId) + 2, rb = radius(l.issueId) + 5;
 		return { x1: a.x + (dx / d) * ra, y1: a.y + (dy / d) * ra, x2: b.x - (dx / d) * rb, y2: b.y - (dy / d) * rb };
 	}
-	// The circle around each epic's island, with its name on top.
+	// The circle of each epic, with its name on top.
 	const hulls = $derived.by(() => {
 		frame;
 		if (epic || model.groups.size < 2) return [];
-		const out = [];
-		for (const [g, ids] of model.groups) {
-			if (!g) continue;
-			const pts = ids.map((id) => [id, pos.get(id)]).filter(([, p]) => p);
-			if (!pts.length) continue;
-			const cx = pts.reduce((a, [, p]) => a + p.x, 0) / pts.length;
-			const cy = pts.reduce((a, [, p]) => a + p.y, 0) / pts.length;
-			// Wide enough for every dot and the key beside it.
-			const r = Math.max(40, ...pts.map(([id, p]) => Math.hypot(p.x - cx, p.y - cy) + radius(id) + 16));
-			out.push({ id: g, name: $projects.find((p) => p.id === g)?.name || 'Epic', cx, cy, r });
-		}
-		return out;
+		return [...model.groups.keys()].map((g) => {
+			const a = anchors.get(g);
+			return a && { id: g || 'none', name: g ? $projects.find((p) => p.id === g)?.name || 'Epic' : 'No epic', cx: a.x, cy: a.y, r: a.r, n: model.groups.get(g).length };
+		}).filter(Boolean);
 	});
+	// Keys show when the circle's tickets are far enough apart on screen to read them.
+	const roomy = (id) => {
+		frame;
+		const g = model.groupOf.get(id) || '';
+		const a = anchors.get(g), n = model.groups.get(g)?.length || 1;
+		return a ? (a.r / Math.sqrt(n)) * zoom > 44 : zoom > 0.8;
+	};
+	// A circle's name is cut to the circle's width on screen.
+	const fitName = (h) => {
+		const label = `${h.name} · ${h.n}`;
+		const max = Math.max(6, Math.floor((2 * h.r * zoom) / 7));
+		return label.length > max ? h.name.slice(0, Math.max(3, max - 6)) + '… · ' + h.n : label;
+	};
 	const hoverIssue = $derived(hover ? $allIssues.find((i) => i.id === hover) : null);
 	const waitsOn = (id) => model.blocks.filter((l) => l.issueId === id && !l.done).length;
 	const shownStates = $derived($states.filter((s) => $allIssues.some((i) => i.stateId === s.id)));
@@ -422,7 +447,7 @@
 					<g transform="translate({tx} {ty}) scale({zoom})">
 						{#each hulls as h (h.id)}
 							<circle cx={h.cx} cy={h.cy} r={h.r} class="hull" />
-							<text x={h.cx} y={h.cy - h.r - 8} class="hl">{h.name}</text>
+							<text x={h.cx} y={h.cy - h.r - 6 / zoom} class="hl" style:font-size="{Math.max(11, 12 / zoom)}px">{fitName(h)}<title>{h.name}</title></text>
 						{/each}
 						{#if edgeMode !== 'blocks'}
 							{#each model.dec as d (d.id)}
@@ -438,6 +463,7 @@
 								<line
 									x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2}
 									class="bl" class:done={l.done} class:lit class:dim={!lit && (neighbours || litIds)}
+									class:across={!lit && model.groupOf.get(l.blockerId) !== model.groupOf.get(l.issueId)}
 									marker-end="url(#ng-{lit ? 'lit' : 'a'})"
 								/>
 							{/each}
@@ -467,7 +493,7 @@
 								{#if nextIds.has(i.id)}<circle cx={p.x} cy={p.y} r={r + 5} class="ring" />{/if}
 								{#if focusId === i.id}<circle cx={p.x} cy={p.y} r={r + 8} class="found" />{/if}
 								<circle cx={p.x} cy={p.y} {r} style:fill={st?.color || 'var(--line-strong)'} class="dot" />
-								{#if zoom > 0.6 || hover === i.id || focusId === i.id || nextIds.has(i.id)}
+								{#if roomy(i.id) || hover === i.id || focusId === i.id}
 									<text x={p.x + r + 4} y={p.y + 3.5} class="lbl">{i.key}</text>
 								{/if}
 							</g>
@@ -625,6 +651,10 @@
 		stroke: var(--line-strong);
 		stroke-dasharray: 3 3;
 	}
+	/* a link between two epics stays faint until its ticket is hovered or found */
+	.bl.across {
+		opacity: 0.18;
+	}
 	.bl.lit {
 		stroke: var(--accent);
 		stroke-width: 2.2;
@@ -681,7 +711,6 @@
 	}
 	.hl {
 		text-anchor: middle;
-		font-size: var(--t-xs);
 		font-weight: 500;
 		fill: var(--ink-2);
 		letter-spacing: 0.02em;
