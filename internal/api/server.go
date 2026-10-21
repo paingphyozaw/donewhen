@@ -263,6 +263,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/issues/{id}/blockers", s.wsGuard(s.handleSetBlockers))
 	mux.HandleFunc("GET /api/blockers", s.wsGuard(s.handleListBlockLinks))
 	mux.HandleFunc("GET /api/blocked", s.wsGuard(s.handleListBlocked))
+	mux.HandleFunc("GET /api/next", s.wsGuard(s.handleNext))
+	mux.HandleFunc("GET /api/decisions", s.wsGuard(s.handleListDecisions))
 	mux.HandleFunc("GET /api/views", s.wsGuard(s.handleListViews))
 	mux.HandleFunc("POST /api/views", s.wsGuard(s.handleCreateView))
 	mux.HandleFunc("PATCH /api/views/{id}", s.wsGuard(s.handleUpdateView))

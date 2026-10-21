@@ -142,9 +142,19 @@ func (s *Service) DeleteIssue(ctx context.Context, wsID, id string, actor string
 
 // AddComment stores a comment and publishes comment.added.
 func (s *Service) AddComment(ctx context.Context, wsID, issueID, body, actor string) (models.Comment, error) {
-	c, err := s.Store.CreateComment(ctx, wsID, issueID, body, actor)
+	return s.AddCommentKind(ctx, wsID, issueID, body, actor, models.CommentKindComment)
+}
+
+// AddCommentKind stores a comment or a decision and publishes comment.added.
+// A decision is logged as a comment whose detail starts with "Decision:".
+func (s *Service) AddCommentKind(ctx context.Context, wsID, issueID, body, actor, kind string) (models.Comment, error) {
+	c, err := s.Store.CreateCommentKind(ctx, wsID, issueID, body, actor, kind)
 	if err != nil {
 		return c, err
+	}
+	detail := excerpt(body, 100)
+	if kind == models.CommentKindDecision {
+		detail = excerpt("Decision: "+body, 100)
 	}
 	is, err := s.Store.GetIssue(ctx, wsID, issueID)
 	if err == nil {
@@ -157,7 +167,7 @@ func (s *Service) AddComment(ctx context.Context, wsID, issueID, body, actor str
 		})
 		s.logActivity(ctx, wsID, models.Activity{
 			IssueID: &is.ID, IssueKey: is.Key, IssueTitle: is.Title, Actor: actor,
-			Kind: "commented", Detail: excerpt(body, 100),
+			Kind: "commented", Detail: detail,
 		})
 	}
 	return c, nil

@@ -25,7 +25,8 @@ The hard rules (confirm before creating, the checklist gates In Review and Done,
 | Read one | `get_issue` |
 | Create / update / move | `save_issue` (no id = create; `state` = a status name; `blockedBy` = keys it waits on) |
 | Epics and initiatives | `list_projects`, `get_project`, `save_project`, `list_initiatives`, `save_initiative` |
-| Comments | `list_comments`, `save_comment` |
+| Comments and decisions | `list_comments`, `save_comment` (`kind: "decision"` for a choice made on the ticket; `get_issue` returns them) |
+| What to take next | `next_issues` (the critical path first) |
 | Labels and states | `list_issue_labels`, `create_issue_label`, `list_issue_statuses` |
 | Done-when | `get_criteria`, `set_criteria`, `check_criterion` |
 | Record | `link_commit`, `save_document`, `set_issue_dev`, `get_activity`, `list_issues_missing_docs` |

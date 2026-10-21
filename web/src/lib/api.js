@@ -176,7 +176,8 @@ export const api = {
 	// One request for a board drag: new column plus the neighbours at the drop point.
 	moveIssue: (id, b) => request('POST', `/issues/${id}/move`, b),
 	comments: (id) => request('GET', `/issues/${id}/comments`),
-	addComment: (id, bodyMd) => request('POST', `/issues/${id}/comments`, { bodyMd }),
+	// kind: 'comment' (default) or 'decision', a choice recorded on the ticket.
+	addComment: (id, bodyMd, kind = 'comment') => request('POST', `/issues/${id}/comments`, { bodyMd, kind }),
 	issueActivity: (id) => request('GET', `/issues/${id}/activity`),
 	activity: (q = {}) => {
 		const p = new URLSearchParams(Object.entries(q).filter(([, v]) => v));

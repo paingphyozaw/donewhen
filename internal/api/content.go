@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/johnreginald/donewhen/internal/auth"
 	"github.com/johnreginald/donewhen/internal/events"
@@ -27,20 +28,47 @@ func (s *Server) handleListComments(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		BodyMd string `json:"bodyMd"`
+		Kind   string `json:"kind"` // comment (default) | decision
 	}
 	if err := readJSON(r, &body); err != nil || body.BodyMd == "" {
 		writeErr(w, http.StatusBadRequest, "bodyMd required")
 		return
 	}
+	if body.Kind == "" {
+		body.Kind = models.CommentKindComment
+	}
 	id, err := s.issueID(r)
 	if handleStoreErr(w, err) {
 		return
 	}
-	c, err := s.svc.AddComment(r.Context(), ws(r), id, body.BodyMd, auth.ActorFrom(r.Context()))
+	c, err := s.svc.AddCommentKind(r.Context(), ws(r), id, body.BodyMd, auth.ActorFrom(r.Context()), body.Kind)
 	if handleStoreErr(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, c)
+}
+
+// handleListDecisions lists the decisions recorded on the workspace's
+// tickets, for the graph.
+func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
+	ds, err := s.store.ListDecisions(r.Context(), ws(r), "")
+	if handleStoreErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, ds)
+}
+
+// handleNext ranks the Ready tickets to take next (?limit=, default 10).
+func (s *Server) handleNext(w http.ResponseWriter, r *http.Request) {
+	limit := 10
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 {
+		limit = n
+	}
+	items, err := s.store.NextIssues(r.Context(), ws(r), limit)
+	if handleStoreErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 // ---- documents ----

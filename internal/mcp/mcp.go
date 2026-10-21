@@ -232,6 +232,9 @@ func buildServer(d *deps) *server.MCPServer {
 				"List tools return slim rows; fetch one item's full detail with the get_* tool. Issue and "+
 				"document lists are newest first and capped at 50 (a 'more' note says when rows were left out). "+
 				"Use save_issue to create/move issues (pass 'state' as a status name). "+
+				"next_issues names the Ready ticket to take next (the critical path first). When the owner makes a "+
+				"choice about a ticket, record it with save_comment kind 'decision'; get_issue returns a ticket's "+
+				"decisions, so read them before you work on it. "+
 				ticketFormat,
 		),
 	)
@@ -428,7 +431,8 @@ func (d *deps) register(s *server.MCPServer) {
 
 	// ---- get_issue ----
 	s.AddTool(mcp.NewTool("get_issue",
-		mcp.WithDescription("Get a single issue by id or key (e.g. K-42)."),
+		mcp.WithDescription("Get a single issue by id or key (e.g. K-42), with the decisions recorded on it "+
+			"('decisions', oldest first). Read the decisions before you work on the ticket."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("Issue id or key")),
 		wsArg(),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -444,7 +448,14 @@ func (d *deps) register(s *server.MCPServer) {
 		if err != nil {
 			return toolErr(err), nil
 		}
-		return jsonResult(is)
+		decisions, err := d.store.ListDecisions(ctx, wsID, is.ID)
+		if err != nil {
+			return toolErr(err), nil
+		}
+		return jsonResult(struct {
+			models.Issue
+			Decisions []models.Comment `json:"decisions"`
+		}{is, decisions})
 	})
 
 	// ---- save_issue (create or update) ----
@@ -517,6 +528,7 @@ func (d *deps) register(s *server.MCPServer) {
 	d.registerMeta(s)
 	d.registerContent(s)
 	d.registerDev(s)
+	d.registerNext(s)
 }
 
 // saveWorkspaceArg reads an optional string argument. A key that is present
