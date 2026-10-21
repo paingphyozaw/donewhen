@@ -314,7 +314,6 @@
 			<option value="">All epics</option>
 			{#each $projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
 		</select>
-		<span class="hint">Drag to move · ⌘ + scroll to zoom · click a dot to open it</span>
 		<span class="spacer"></span>
 		<span class="count">{model.shown.length} tickets · {model.blocks.length} links · {model.dec.length} decisions</span>
 	</div>
@@ -502,7 +501,6 @@
 		width: auto;
 		max-width: 220px;
 	}
-	.hint,
 	.count {
 		font-size: var(--t-xs);
 		color: var(--ink-3);
@@ -856,9 +854,6 @@
 	}
 	@media (max-width: 760px) {
 		.rail {
-			display: none;
-		}
-		.hint {
 			display: none;
 		}
 	}
