@@ -35,6 +35,7 @@
 	let filter = $state('all');
 	let draft = $state('');
 	let sending = $state(false);
+	let asDecision = $state(false); // send the draft as a decision, not a plain comment
 	let list = $state(null);
 	let nearBottom = true;
 
@@ -106,8 +107,9 @@
 		if (!body || sending) return;
 		sending = true;
 		try {
-			await api.addComment(issue.id, body);
+			await api.addComment(issue.id, body, asDecision ? 'decision' : 'comment');
 			draft = '';
+			asDecision = false;
 			nearBottom = true; // our own comment: always show it
 			await load();
 		} catch (e) {
@@ -144,6 +146,7 @@
 						<div class="meta">
 							<span class="who">{e.c.actor === 'ai' ? $aiName : 'You'}</span>
 							{#if e.c.kind === 'blocked_reason'}<span class="when">blocked reason</span>{/if}
+							{#if e.c.kind === 'decision'}<span class="decision">Decision</span>{/if}
 							<span class="sp"></span>
 							<span class="when">{rel(e.at)}</span>
 						</div>
@@ -165,8 +168,9 @@
 	<div class="add">
 		<textarea class="textarea" bind:value={draft} onkeydown={keydown} placeholder="Leave a comment…" rows="3"></textarea>
 		<div class="row">
+			<label class="asdec" title="Record a choice made on this ticket. Agents read decisions before they work on it."><input type="checkbox" bind:checked={asDecision} /> Decision</label>
 			<span class="hint">⌘↵ to send</span>
-			<button class="btn primary sm" onclick={send} disabled={!draft.trim() || sending}>Comment</button>
+			<button class="btn primary sm" onclick={send} disabled={!draft.trim() || sending}>{asDecision ? 'Record decision' : 'Comment'}</button>
 		</div>
 	</div>
 </div>
@@ -360,5 +364,21 @@
 	.hint {
 		font-size: var(--t-xs);
 		color: var(--ink-3);
+	}
+	.decision {
+		font-size: var(--t-xs);
+		font-weight: 500;
+		color: var(--st-review);
+		border: 1px solid currentColor;
+		border-radius: var(--r-sm);
+		padding: 0 var(--s1);
+	}
+	.asdec {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--s1);
+		font-size: var(--t-xs);
+		color: var(--ink-2);
+		cursor: pointer;
 	}
 </style>

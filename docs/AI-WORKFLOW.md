@@ -38,10 +38,11 @@ All tools are in `internal/mcp/`. Each tool accepts an optional `workspace` argu
 
 | Job | Tools |
 |---|---|
-| Find and read issues | `list_issues`, `get_issue`, `issue_by_commit` |
+| Find and read issues | `list_issues`, `get_issue` (with the ticket's decisions), `issue_by_commit` |
+| What to take next | `next_issues` (Ready tickets with nothing in the way, the longest chain of open work first) |
 | Create, update, move, delete | `save_issue`, `delete_issue` |
 | Epics (`project`) and projects (`initiative`) | `list_projects`, `get_project`, `save_project`, `archive_project`, `list_initiatives`, `get_initiative`, `save_initiative` |
-| Comments | `list_comments`, `save_comment` |
+| Comments and decisions | `list_comments`, `save_comment` (`kind: "decision"` records a choice made on the ticket) |
 | States and labels | `list_issue_statuses`, `get_issue_status`, `list_issue_labels`, `create_issue_label` |
 | Done-when | `get_criteria`, `set_criteria`, `check_criterion` |
 | Record | `link_commit`, `set_issue_dev`, `save_document`, `list_documents`, `get_document`, `get_activity`, `list_issues_missing_docs` |
@@ -55,6 +56,8 @@ get_issue       {"id": "ACM-42"}
 save_issue      {"id": "ACM-42", "state": "In Progress"}
 save_project    {"name": "Billing", "initiative": "<initiative id>"}
 save_comment    {"issueId": "ACM-42", "body": "Blocked: need the API key from you."}
+save_comment    {"issueId": "ACM-42", "body": "Owner: refunds go back to the original card only.", "kind": "decision"}
+next_issues     {"workspace": "acme", "limit": 5}
 list_issue_statuses {}
 set_criteria    {"issue": "ACM-42", "items": [{"text": "POST /login returns 200 with a valid password", "done": false}]}
 check_criterion {"issue": "ACM-42", "index": 1, "done": true, "evidence": "go test ./internal/auth passes"}

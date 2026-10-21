@@ -39,7 +39,7 @@
 
 	// Mobile bottom-tab nav — surfaces the record surfaces (review / work / history / artifacts).
 	const tabs = [
-		{ label: 'Tasks', href: '/board', icon: CircleCheckBig, match: (p) => ['/tasks', '/list', '/by-epic', '/board', '/links', '/blocked'].includes(p) },
+		{ label: 'Tasks', href: '/board', icon: CircleCheckBig, match: (p) => ['/tasks', '/list', '/by-epic', '/board', '/links', '/blocked', '/graph'].includes(p) },
 		{ label: 'Inbox', href: '/inbox', icon: Inbox, match: (p) => p === '/inbox' },
 		{ label: 'Artifacts', href: '/artifacts', icon: FileText, match: (p) => p.startsWith('/artifacts') },
 		{ label: 'Log', href: '/log', icon: History, match: (p) => p === '/log' },
