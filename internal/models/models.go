@@ -192,9 +192,16 @@ type Comment struct {
 	IssueID   string    `json:"issueId"`
 	BodyMD    string    `json:"bodyMd"`
 	Actor     string    `json:"actor"` // human | ai
-	Kind      string    `json:"kind"`  // comment | blocked_reason
+	Kind      string    `json:"kind"`  // comment | decision | blocked_reason
 	CreatedAt time.Time `json:"createdAt"`
 }
+
+// Comment kinds a caller may write. blocked_reason is written only by a move
+// to Blocked.
+const (
+	CommentKindComment  = "comment"
+	CommentKindDecision = "decision"
+)
 
 type Document struct {
 	ID           string    `json:"id"`

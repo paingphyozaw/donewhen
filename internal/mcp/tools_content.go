@@ -40,9 +40,11 @@ func (d *deps) registerContent(s *server.MCPServer) {
 	})
 
 	s.AddTool(mcp.NewTool("save_comment",
-		mcp.WithDescription("Add a comment to an issue."),
+		mcp.WithDescription("Add a comment to an issue. kind 'decision' records a choice made on the ticket "+
+			"(who decided what, and why); get_issue returns the ticket's decisions so the next agent reads them first."),
 		mcp.WithString("issueId", mcp.Required(), mcp.Description("Issue id or key")),
 		mcp.WithString("body", mcp.Required(), mcp.Description("Markdown comment body")),
+		mcp.WithString("kind", mcp.Enum("comment", "decision"), mcp.Description("comment (default) or decision")),
 		wsArg(),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		ref, err := req.RequireString("issueId")
@@ -61,7 +63,7 @@ func (d *deps) registerContent(s *server.MCPServer) {
 		if err != nil {
 			return toolErr(err), nil
 		}
-		c, err := d.svc.AddComment(ctx, wsID, is.ID, body, auth.ActorAI)
+		c, err := d.svc.AddCommentKind(ctx, wsID, is.ID, body, auth.ActorAI, req.GetString("kind", models.CommentKindComment))
 		if err != nil {
 			return toolErr(err), nil
 		}

@@ -36,19 +36,52 @@ func (s *Store) ListComments(ctx context.Context, wsID, issueID string) ([]model
 }
 
 func (s *Store) CreateComment(ctx context.Context, wsID, issueID, body, actor string) (models.Comment, error) {
+	return s.CreateCommentKind(ctx, wsID, issueID, body, actor, models.CommentKindComment)
+}
+
+// CreateCommentKind stores a comment of one kind: a plain comment or a
+// decision (the record of a choice made on the ticket, which agents read
+// first in get_issue).
+func (s *Store) CreateCommentKind(ctx context.Context, wsID, issueID, body, actor, kind string) (models.Comment, error) {
 	if actor == "" {
 		actor = "human"
 	}
+	if kind != models.CommentKindComment && kind != models.CommentKindDecision {
+		return models.Comment{}, invalid("kind must be comment or decision")
+	}
 	var c models.Comment
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO comments (issue_id, body_md, actor)
-		 SELECT $1,$2,$3 FROM issues WHERE id=$1 AND workspace_id=$4
+		`INSERT INTO comments (issue_id, body_md, actor, kind)
+		 SELECT $1,$2,$3,$5 FROM issues WHERE id=$1 AND workspace_id=$4
 		 RETURNING id, issue_id, body_md, actor, kind, created_at`,
-		issueID, body, actor, wsID).Scan(&c.ID, &c.IssueID, &c.BodyMD, &c.Actor, &c.Kind, &c.CreatedAt)
+		issueID, body, actor, wsID, kind).Scan(&c.ID, &c.IssueID, &c.BodyMD, &c.Actor, &c.Kind, &c.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrNotFound
 	}
 	return c, err
+}
+
+// ListDecisions returns the decisions recorded on one issue (issueID set)
+// or on every issue of the workspace (issueID empty), oldest first.
+func (s *Store) ListDecisions(ctx context.Context, wsID, issueID string) ([]models.Comment, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT c.id, c.issue_id, c.body_md, c.actor, c.kind, c.created_at
+		FROM comments c JOIN issues i ON i.id = c.issue_id
+		WHERE i.workspace_id=$1 AND c.kind='decision' AND ($2 = '' OR c.issue_id::text = $2)
+		ORDER BY c.created_at`, wsID, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []models.Comment{}
+	for rows.Next() {
+		var c models.Comment
+		if err := rows.Scan(&c.ID, &c.IssueID, &c.BodyMD, &c.Actor, &c.Kind, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // ---- Documents ----
