@@ -1,11 +1,12 @@
 <script>
-	// The workspace as a network: every ticket a dot coloured by its state,
-	// "blocked by" links as arrows, decisions as small squares on their
-	// ticket. Tickets settle by a small force layout: linked work pulls
-	// together, everything else pushes apart. The rail on the right is
-	// "Next up" (GET /api/next): the Ready tickets that hold up the most work,
-	// with their chain lit on the map. Drag the map or a dot, ⌘ + scroll to
-	// zoom, hover for a card, click to open the ticket.
+	// The workspace as a living network, drawn on a canvas. Every ticket is a
+	// glowing dot in its state's colour, sized by how much work waits on it;
+	// "blocked by" links are soft curves with small dots flowing from the
+	// blocker to the ticket it holds up; decisions are small squares on their
+	// ticket. A force layout keeps linked work together and lets the rest
+	// breathe. Hover a ticket to light its chain, drag the map or a dot,
+	// ⌘ + scroll to zoom, click to open. The rail on the right is "Next up"
+	// (GET /api/next): the Ready tickets that hold up the most work.
 	import { tick, untrack } from 'svelte';
 	import { api } from '$lib/api.js';
 	import { allIssues, states, blockLinks, projects, activeWorkspace } from '$lib/store.js';
@@ -13,6 +14,7 @@
 	import StateIcon from './StateIcon.svelte';
 	import { Plus, Minus, Maximize, Network, Sparkles, ChevronRight, ChevronLeft, Scale } from '@lucide/svelte';
 
+	// ── data ────────────────────────────────────────────────────────────
 	let decisions = $state([]);
 	let next = $state([]);
 	async function loadExtras() {
@@ -24,7 +26,7 @@
 	$effect(() => {
 		if ($activeWorkspace?.id) loadExtras();
 	});
-	// Moves and new links change what is next: refresh when the links or tickets change.
+	// Moves and new links change what is next.
 	let lastSig = '';
 	$effect(() => {
 		const sig = $blockLinks.length + ':' + $allIssues.map((i) => i.stateId).join('');
@@ -36,10 +38,9 @@
 	let hiddenStates = $state(new Set());
 	let statesInit = false;
 	$effect(() => {
-		// Canceled work is noise on the map: hidden until asked for.
+		// Finished work is noise on the map: Done and Canceled start hidden.
 		if (!statesInit && $states.length) {
 			statesInit = true;
-			// Finished work is noise on the map: Done and Canceled start hidden.
 			hiddenStates = new Set($states.filter((s) => s.category === 'canceled' || s.category === 'completed').map((s) => s.id));
 		}
 	});
@@ -51,98 +52,68 @@
 	let edgeMode = $state('all'); // all | blocks | decisions
 	let epic = $state('');
 	let railOpen = $state(true);
-
 	const stOf = (n) => $states.find((s) => s.id === n.stateId);
-	const isClosed = (st) => st?.category === 'completed' || st?.category === 'canceled';
 
-	// ── the graph ───────────────────────────────────────────────────────
-	const R = 7; // ticket dot radius before its weight
 	const model = $derived.by(() => {
 		const shown = $allIssues.filter((i) => !hiddenStates.has(i.stateId) && (!epic || i.projectId === epic));
 		const ids = new Set(shown.map((i) => i.id));
 		const blocks = $blockLinks.filter((l) => ids.has(l.issueId) && ids.has(l.blockerId));
-		const unblocks = new Map(); // blocker → count
+		const unblocks = new Map();
 		for (const l of blocks) unblocks.set(l.blockerId, (unblocks.get(l.blockerId) || 0) + 1);
 		const dec = decisions.filter((d) => ids.has(d.issueId));
 		const decCount = new Map();
 		for (const d of dec) decCount.set(d.issueId, (decCount.get(d.issueId) || 0) + 1);
-		// Each epic is an island: its tickets gather around their own anchor.
-		const groupOf = new Map(); // node id → epic id ('' = no epic)
-		const groups = new Map(); // epic id → ticket ids
-		for (const i of shown) {
-			const g = i.projectId || '';
-			groupOf.set(i.id, g);
-			(groups.get(g) || groups.set(g, []).get(g)).push(i.id);
-		}
-		for (const d of dec) groupOf.set('d' + d.id, groupOf.get(d.issueId));
-		return { shown, blocks, dec, unblocks, decCount, groupOf, groups };
+		const stateById = new Map($states.map((s) => [s.id, s]));
+		const colour = new Map(shown.map((i) => [i.id, stateById.get(i.stateId)?.color || '#8a8a8a']));
+		return { shown, blocks, dec, unblocks, decCount, stateById, colour };
 	});
 
-	// Positions live outside the reactive model so a re-filter keeps the dots
-	// where they were and only new ones are placed.
-	const pos = new Map(); // id → {x, y, vx, vy, fixed}
-	let frame = $state(0); // bumped when positions change
+	// ── layout (plain objects, outside Svelte's reactivity) ─────────────
+	// id → {x, y, vx, vy, fixed, born, glow, target}; a re-filter keeps the dots where they were.
+	const pos = new Map();
 	let alpha = 0;
-	let raf = 0;
+	const radius = (id) => 5 + Math.min(9, (model.unblocks.get(id) || 0) * 1.6);
 
-	// Epic anchors on a ring, the largest epic first; tickets with no epic in the middle.
+	// Tickets of one epic drift toward the same spot, without any drawn shape.
 	let anchors = new Map();
-	// Each epic (and the tickets with no epic) gets a circle sized to its
-	// tickets. The circles are packed so they never overlap: biggest in the
-	// middle, each next one at the free spot closest to the middle.
-	const circleR = (n) => 34 + 26 * Math.sqrt(n);
-	function placeAnchors(groups) {
-		const list = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
-		const placed = [];
-		const gap = 28;
-		for (const [g, ids] of list) {
-			const r = circleR(ids.length);
-			let best = placed.length ? null : { x: 0, y: 0 };
-			for (const q of placed) {
-				for (let k = 0; k < 48; k++) {
-					const a = (k / 48) * Math.PI * 2;
-					const c = { x: q.x + Math.cos(a) * (q.r + r + gap), y: q.y + Math.sin(a) * (q.r + r + gap) };
-					if (placed.some((o) => Math.hypot(o.x - c.x, o.y - c.y) < o.r + r + gap - 0.5)) continue;
-					// Prefer a wide picture over a tall one: the screen is wide.
-					const score = Math.hypot(c.x / 1.4, c.y);
-					if (!best || score < best.score) best = { ...c, score };
-				}
-			}
-			placed.push({ g, x: best.x, y: best.y, r });
-		}
-		anchors = new Map(placed.map((c) => [c.g, c]));
+	function placeAnchors(shown) {
+		const groups = [...new Set(shown.map((i) => i.projectId || ''))];
+		const ring = groups.length > 1 ? 90 + 18 * Math.sqrt(shown.length) : 0;
+		anchors = new Map(
+			groups.map((g, k) => {
+				const a = (k / groups.length) * Math.PI * 2;
+				return [g, { x: Math.cos(a) * ring * 1.3, y: Math.sin(a) * ring }];
+			})
+		);
 	}
-	function seed(id, near) {
+	function seed(id, near, group) {
 		if (pos.has(id)) return;
-		const an = anchors.get(model.groupOf.get(id) || '') || { x: 0, y: 0, r: 60 };
-		const p = (near && pos.get(near)) || an;
-		const a = Math.random() * Math.PI * 2, r = near ? 20 : an.r * 0.6 * Math.sqrt(Math.random());
-		pos.set(id, { x: p.x + Math.cos(a) * r, y: p.y + Math.sin(a) * r, vx: 0, vy: 0, fixed: false });
+		const p = (near && pos.get(near)) || anchors.get(group || '') || { x: 0, y: 0 };
+		const a = Math.random() * Math.PI * 2, r = near ? 18 : 50 * Math.sqrt(Math.random());
+		pos.set(id, { x: p.x + Math.cos(a) * r, y: p.y + Math.sin(a) * r, vx: 0, vy: 0, fixed: false, born: performance.now(), glow: 0, target: 0 });
 	}
+
 	function stepLayout() {
 		const m = model;
-		const nodes = [
-			...m.shown.map((i) => ({ id: i.id, w: 1 })),
-			...m.dec.map((d) => ({ id: 'd' + d.id, w: 0.35 }))
-		];
-		const P = nodes.map((n) => pos.get(n.id) || { x: 0, y: 0, vx: 0, vy: 0, fixed: true });
-		const G = nodes.map((n) => m.groupOf.get(n.id) || '');
-		// repulsion: tickets in the same circle push apart, stronger when close
-		for (let i = 0; i < P.length; i++) {
-			const a = P[i];
-			for (let j = i + 1; j < P.length; j++) {
-				if (G[i] !== G[j]) continue;
-				const b = P[j];
+		const items = [];
+		for (const i of m.shown) items.push([pos.get(i.id), i.projectId || '']);
+		for (const d of m.dec) items.push([pos.get('d' + d.id), null]);
+		// repulsion: every pair pushes apart, stronger when close
+		for (let i = 0; i < items.length; i++) {
+			const a = items[i][0];
+			if (!a) continue;
+			for (let j = i + 1; j < items.length; j++) {
+				const b = items[j][0];
+				if (!b) continue;
 				let dx = a.x - b.x, dy = a.y - b.y;
 				let d2 = dx * dx + dy * dy;
-				if (d2 > 90000) continue;
-				if (d2 < 1) (dx = Math.random() - 0.5, dy = Math.random() - 0.5, (d2 = 1));
-				const f = (320 / d2) * alpha;
+				if (d2 > 62500) continue;
+				if (d2 < 1) (dx = Math.random() - 0.5), (dy = Math.random() - 0.5), (d2 = 1);
+				const f = (420 / d2) * alpha;
 				a.vx += dx * f; a.vy += dy * f;
 				b.vx -= dx * f; b.vy -= dy * f;
 			}
 		}
-		// springs: a blocked-by link wants 70px, a decision sits 26px from its ticket
 		const spring = (ia, ib, len, k) => {
 			const a = pos.get(ia), b = pos.get(ib);
 			if (!a || !b) return;
@@ -151,75 +122,74 @@
 			a.vx += dx * f; a.vy += dy * f;
 			b.vx -= dx * f; b.vy -= dy * f;
 		};
-		// a link inside an epic pulls; one across epics barely does (the circles stay put)
-		for (const l of m.blocks)
-			spring(l.blockerId, l.issueId, 60, m.groupOf.get(l.blockerId) === m.groupOf.get(l.issueId) ? 0.08 : 0.004);
-		for (const d of m.dec) spring(d.issueId, 'd' + d.id, 26, 0.3);
-		// each ticket is pulled to its circle's centre and never leaves the circle
-		for (let i = 0; i < P.length; i++) {
-			const p = P[i];
-			const an = anchors.get(G[i]) || { x: 0, y: 0, r: 60 };
-			p.vx -= (p.x - an.x) * 0.02 * alpha;
-			p.vy -= (p.y - an.y) * 0.02 * alpha;
+		for (const l of m.blocks) spring(l.blockerId, l.issueId, 55, 0.06);
+		for (const d of m.dec) spring(d.issueId, 'd' + d.id, 22, 0.3);
+		for (const [p, g] of items) {
+			if (!p) continue;
+			const an = g === null ? null : anchors.get(g);
+			if (an) {
+				p.vx -= (p.x - an.x) * 0.012 * alpha;
+				p.vy -= (p.y - an.y) * 0.012 * alpha;
+			}
 			if (p.fixed) (p.vx = 0), (p.vy = 0);
 			p.x += p.vx;
 			p.y += p.vy;
-			p.vx *= 0.6;
-			p.vy *= 0.6;
-			const dx = p.x - an.x, dy = p.y - an.y, d = Math.hypot(dx, dy), max = an.r - 18;
-			if (d > max) (p.x = an.x + (dx / d) * max), (p.y = an.y + (dy / d) * max);
+			p.vx *= 0.58;
+			p.vy *= 0.58;
 		}
 	}
-
-	function run(heat = 1, settle = 0) {
-		alpha = Math.max(alpha, heat);
+	function heat(a, settle = 0) {
+		alpha = Math.max(alpha, a);
 		for (let i = 0; i < settle; i++) (stepLayout(), (alpha *= 0.985));
-		frame++;
-		if (raf) return;
-		const loop = () => {
-			stepLayout();
-			alpha *= 0.96;
-			frame++;
-			raf = alpha > 0.01 ? requestAnimationFrame(loop) : 0;
-			// Until someone moves the map, keep the whole network in view.
-			if (!raf && !userMoved) fit();
-		};
-		raf = requestAnimationFrame(loop);
+		wake();
 	}
 
 	let placedOnce = false;
 	$effect(() => {
 		const m = model;
-		// The layout writes `frame`; untracked, so it never re-runs this effect.
+		// The layout mutates plain objects; untracked, so it never re-runs this effect.
 		untrack(() => {
-			placeAnchors(m.groups);
-			for (const l of m.blocks) (seed(l.blockerId), seed(l.issueId, l.blockerId));
-			for (const i of m.shown) seed(i.id);
+			placeAnchors(m.shown);
+			for (const l of m.blocks) {
+				const is = m.shown.find((i) => i.id === l.blockerId);
+				seed(l.blockerId, null, is?.projectId);
+				seed(l.issueId, l.blockerId);
+			}
+			for (const i of m.shown) seed(i.id, null, i.projectId);
 			for (const d of m.dec) seed('d' + d.id, d.issueId);
 			if (!placedOnce && m.shown.length) {
 				placedOnce = true;
-				run(1, 400); // settle before the first paint, then fit
-				tick().then(fit);
-			} else run(0.3);
+				heat(1, 420);
+				tick().then(() => fit(false));
+			} else heat(0.35);
 		});
 	});
 
-	// ── chain highlight (hover a ticket, or a Next-up row) ──────────────
+	// ── focus: hover, search, a Next-up row ─────────────────────────────
 	let hover = $state('');
-	let litKeys = $state(null); // Set of keys on a Next-up chain
+	let focusId = $state('');
+	let litKeys = $state(null);
 	const byKey = $derived(new Map($allIssues.map((i) => [i.key, i])));
 	const nextIds = $derived(new Set(next.map((n) => n.id)));
-	let focusId = $state(''); // the ticket found by search, lit until cleared
-	const neighbours = $derived.by(() => {
+	// The ticket in focus and its whole chain: what it waits on, what it unblocks.
+	const chain = $derived.by(() => {
+		if (litKeys) return new Set([...litKeys].map((k) => byKey.get(k)?.id).filter(Boolean));
 		const f = hover || focusId;
 		if (!f) return null;
-		const s = new Set([f]);
+		const up = new Map(), down = new Map();
 		for (const l of model.blocks) {
-			if (l.issueId === f) s.add(l.blockerId);
-			if (l.blockerId === f) s.add(l.issueId);
+			(up.get(l.issueId) || up.set(l.issueId, []).get(l.issueId)).push(l.blockerId);
+			(down.get(l.blockerId) || down.set(l.blockerId, []).get(l.blockerId)).push(l.issueId);
 		}
+		const s = new Set([f]);
+		const walk = (id, m) => {
+			for (const n of m.get(id) || []) if (!s.has(n)) (s.add(n), walk(n, m));
+		};
+		walk(f, up);
+		walk(f, down);
 		return s;
 	});
+
 	let query = $state('');
 	function find() {
 		const q = query.trim().toLowerCase();
@@ -227,57 +197,114 @@
 		const hit =
 			model.shown.find((i) => i.key.toLowerCase() === q) ||
 			model.shown.find((i) => i.key.toLowerCase().includes(q) || i.title.toLowerCase().includes(q));
-		if (!hit || !view) return (focusId = '');
+		if (!hit) return (focusId = '');
 		focusId = hit.id;
-		const p = pos.get(hit.id), r = view.getBoundingClientRect();
-		userMoved = true;
-		zoom = Math.max(zoom, 1.2);
-		tx = r.width / 2 - p.x * zoom;
-		ty = r.height / 2 - p.y * zoom;
+		centreOn(hit.id, Math.max(zoom, 1.3));
 	}
 	function searchKey(e) {
 		if (e.key === 'Enter') find();
-		else if (e.key === 'Escape') ((query = ''), (focusId = ''));
+		else if (e.key === 'Escape') (query = ''), (focusId = '');
 	}
-	const litIds = $derived(litKeys ? new Set([...litKeys].map((k) => byKey.get(k)?.id).filter(Boolean)) : null);
-	const isDim = (id) => (neighbours && !neighbours.has(id)) || (litIds && !litIds.has(id));
-	const edgeLit = (l) =>
-		(neighbours && (l.issueId === (hover || focusId) || l.blockerId === (hover || focusId))) || (litIds && litIds.has(l.issueId) && litIds.has(l.blockerId));
 
-	// ── pan, zoom, drag a dot ───────────────────────────────────────────
+	// ── camera ──────────────────────────────────────────────────────────
 	let view = $state(null);
+	let canvas = $state(null);
 	let tx = $state(0), ty = $state(0), zoom = $state(1);
-	let drag = null; // {kind:'map'|'node', id, x, y, tx, ty, moved}
-	let userMoved = false; // the map was panned or zoomed by hand
-	let dragging = $state(false);
-	const clampZoom = (z) => Math.min(3, Math.max(0.2, z));
+	let userMoved = false;
+	let cam = null; // {tx, ty, zoom} the camera glides to
+	const clampZoom = (z) => Math.min(4, Math.max(0.15, z));
 	const toWorld = (cx, cy) => ({ x: (cx - tx) / zoom, y: (cy - ty) / zoom });
-
-	function downMap(e) {
-		if (e.button !== 0) return;
-		drag = { kind: 'map', x: e.clientX, y: e.clientY, tx, ty, moved: false };
+	function centreOn(id, z) {
+		const p = pos.get(id);
+		if (!p || !view) return;
+		userMoved = true;
+		const r = view.getBoundingClientRect();
+		cam = { zoom: z, tx: r.width / 2 - p.x * z, ty: r.height / 2 - p.y * z };
+		wake();
 	}
-	function downNode(e, id) {
+	function fit(glide = false) {
+		if (!view) return;
+		let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+		for (const i of model.shown) {
+			const p = pos.get(i.id);
+			if (!p) continue;
+			x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+			x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
+		}
+		if (x0 === Infinity) return;
+		const r = view.getBoundingClientRect();
+		const top = 30, bottom = 70, side = 40;
+		const z = clampZoom(Math.min(2, (r.width - 2 * side) / (x1 - x0 || 1), (r.height - top - bottom) / (y1 - y0 || 1)));
+		const t = { zoom: z, tx: r.width / 2 - ((x0 + x1) / 2) * z, ty: top + (r.height - top - bottom) / 2 - ((y0 + y1) / 2) * z };
+		if (glide) cam = t;
+		else (zoom = t.zoom), (tx = t.tx), (ty = t.ty);
+		wake();
+	}
+	function zoomAt(z, cx, cy) {
+		const nz = clampZoom(z);
+		tx = cx - ((cx - tx) * nz) / zoom;
+		ty = cy - ((cy - ty) * nz) / zoom;
+		zoom = nz;
+		cam = null;
+		wake();
+	}
+	function step(f) {
+		userMoved = true;
+		const r = view.getBoundingClientRect();
+		zoomAt(zoom * f, r.width / 2, r.height / 2);
+	}
+
+	// ── pointer ─────────────────────────────────────────────────────────
+	let drag = null; // {kind:'map'|'node', id, x, y, tx, ty, moved}
+	let dragging = $state(false);
+	let cardAt = $state({ x: 0, y: 0 });
+	function hitTest(cx, cy) {
+		const w = toWorld(cx, cy);
+		let best = '', bd = Infinity;
+		for (const i of model.shown) {
+			const p = pos.get(i.id);
+			if (!p) continue;
+			const d = Math.hypot(p.x - w.x, p.y - w.y);
+			if (d < radius(i.id) + 6 / zoom && d < bd) (bd = d), (best = i.id);
+		}
+		return best;
+	}
+	function local(e) {
+		const r = view.getBoundingClientRect();
+		return { x: e.clientX - r.left, y: e.clientY - r.top };
+	}
+	function onDown(e) {
 		if (e.button !== 0) return;
-		e.stopPropagation();
-		drag = { kind: 'node', id, x: e.clientX, y: e.clientY, moved: false };
+		const l = local(e);
+		const id = hitTest(l.x, l.y);
+		drag = id ? { kind: 'node', id, x: e.clientX, y: e.clientY, moved: false } : { kind: 'map', x: e.clientX, y: e.clientY, tx, ty, moved: false };
 	}
 	function onMove(e) {
-		if (!drag) return;
+		if (!view) return;
+		if (!drag) {
+			const l = local(e);
+			const inside = l.x >= 0 && l.y >= 0 && l.x <= view.clientWidth && l.y <= view.clientHeight;
+			const id = inside ? hitTest(l.x, l.y) : '';
+			if (id !== hover) (hover = id), wake();
+			if (id) cardAt = { x: l.x + 16, y: l.y + 16 };
+			return;
+		}
 		const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
 		if (!drag.moved && Math.hypot(dx, dy) < 4) return;
 		drag.moved = true;
 		dragging = true;
+		userMoved = true;
 		if (drag.kind === 'map') {
-			userMoved = true;
+			cam = null;
 			tx = drag.tx + dx;
 			ty = drag.ty + dy;
+			wake();
 		} else {
-			const r = view.getBoundingClientRect();
-			const w = toWorld(e.clientX - r.left, e.clientY - r.top);
+			const l = local(e);
+			const w = toWorld(l.x, l.y);
 			const p = pos.get(drag.id);
 			if (p) Object.assign(p, { x: w.x, y: w.y, vx: 0, vy: 0, fixed: true });
-			run(0.25);
+			heat(0.3);
 		}
 	}
 	function onUp() {
@@ -292,106 +319,305 @@
 		setTimeout(() => (dragging = false), 0);
 		drag = null;
 	}
-	function zoomAt(z, cx, cy) {
-		const nz = clampZoom(z);
-		tx = cx - ((cx - tx) * nz) / zoom;
-		ty = cy - ((cy - ty) * nz) / zoom;
-		zoom = nz;
-	}
 	function onWheel(e) {
 		e.preventDefault();
 		userMoved = true;
-		const r = view.getBoundingClientRect();
-		if (e.ctrlKey || e.metaKey) zoomAt(zoom * Math.exp(-e.deltaY * 0.01), e.clientX - r.left, e.clientY - r.top);
-		else (tx -= e.deltaX), (ty -= e.deltaY);
+		const l = local(e);
+		if (e.ctrlKey || e.metaKey) zoomAt(zoom * Math.exp(-e.deltaY * 0.01), l.x, l.y);
+		else (tx -= e.deltaX), (ty -= e.deltaY), (cam = null), wake();
 	}
 	$effect(() => {
 		if (!view) return;
 		view.addEventListener('wheel', onWheel, { passive: false });
 		return () => view.removeEventListener('wheel', onWheel);
 	});
-	function step(f) {
-		userMoved = true;
-		const r = view.getBoundingClientRect();
-		zoomAt(zoom * f, r.width / 2, r.height / 2);
-	}
-	function fit() {
-		if (!view) return;
-		const ids = [...model.shown.map((i) => i.id), ...model.dec.map((d) => 'd' + d.id)];
-		if (!ids.length) return;
-		let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-		for (const id of ids) {
-			const p = pos.get(id);
-			if (!p) continue;
-			x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
-			x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
-		}
-		for (const h of hulls) {
-			x0 = Math.min(x0, h.cx - h.r); y0 = Math.min(y0, h.cy - h.r - 16);
-			x1 = Math.max(x1, h.cx + h.r); y1 = Math.max(y1, h.cy + h.r);
-		}
-		// Leave room for the labels, and for the legend along the bottom.
-		const r = view.getBoundingClientRect();
-		const top = 44, bottom = 84, side = 48;
-		const w = x1 - x0 || 1, h = y1 - y0 || 1;
-		zoom = clampZoom(Math.min(1.6, (r.width - 2 * side) / w, (r.height - top - bottom) / h));
-		tx = r.width / 2 - ((x0 + x1) / 2) * zoom;
-		ty = top + (r.height - top - bottom) / 2 - ((y0 + y1) / 2) * zoom;
-	}
 	function onKey(e) {
 		if (e.key === '+' || e.key === '=') step(1.2);
 		else if (e.key === '-') step(1 / 1.2);
-		else if (e.key === '0') fit();
-		else if (e.key === 'Escape') ((litKeys = null), (focusId = ''), (query = ''));
+		else if (e.key === '0') fit(true);
+		else if (e.key === 'Escape') (litKeys = null), (focusId = ''), (query = '');
 	}
 
-	// ── what a dot shows ────────────────────────────────────────────────
-	const radius = (id) => R + Math.min(7, (model.unblocks.get(id) || 0) * 1.5);
-	// A fresh object each frame: the layout moves the stored point in place,
-	// so handing it out directly would look unchanged to the template.
-	const P = (id) => {
-		frame;
-		const p = pos.get(id);
-		return p ? { x: p.x, y: p.y } : { x: 0, y: 0 };
-	};
-	function arrow(l) {
-		const a = P(l.blockerId), b = P(l.issueId);
-		const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
-		const ra = radius(l.blockerId) + 2, rb = radius(l.issueId) + 5;
-		return { x1: a.x + (dx / d) * ra, y1: a.y + (dy / d) * ra, x2: b.x - (dx / d) * rb, y2: b.y - (dy / d) * rb };
+	// ── drawing ─────────────────────────────────────────────────────────
+	const reduceMotion = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+	let theme = {};
+	function readTheme() {
+		const cs = getComputedStyle(document.documentElement);
+		const v = (n) => cs.getPropertyValue(n).trim();
+		const set = document.documentElement.dataset.theme;
+		theme = {
+			line: v('--line'), ink: v('--ink'), ink3: v('--ink-3'), accent: v('--accent'), decision: v('--st-review'),
+			mono: v('--mono'), surface: v('--surface'),
+			dark: set === 'dark' || (set !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)
+		};
 	}
-	// The circle of each epic, with its name on top.
-	const hulls = $derived.by(() => {
-		frame;
-		if (epic || model.groups.size < 2) return [];
-		return [...model.groups.keys()].map((g) => {
-			const a = anchors.get(g);
-			return a && { id: g || 'none', name: g ? $projects.find((p) => p.id === g)?.name || 'Epic' : 'No epic', cx: a.x, cy: a.y, r: a.r, n: model.groups.get(g).length };
-		}).filter(Boolean);
+	// "#rrggbb" + alpha → rgba(); anything else is returned as is.
+	function rgba(hex, a) {
+		const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+		if (!m) return hex;
+		const n = parseInt(m[1], 16);
+		return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+	}
+	function lighten(hex, f) {
+		const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+		if (!m) return hex;
+		const n = parseInt(m[1], 16);
+		const c = (s) => Math.round(((n >> s) & 255) + (255 - ((n >> s) & 255)) * f);
+		return `rgb(${c(16)}, ${c(8)}, ${c(0)})`;
+	}
+	// A gentle curve from a to b; the bend has a fixed side so a pair never overlaps.
+	function curve(a, b) {
+		const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+		const bend = Math.min(40, d * 0.16);
+		return { cx: (a.x + b.x) / 2 - (dy / d) * bend, cy: (a.y + b.y) / 2 + (dx / d) * bend, d };
+	}
+	const qpt = (a, c, b, t) => ({
+		x: (1 - t) * (1 - t) * a.x + 2 * (1 - t) * t * c.cx + t * t * b.x,
+		y: (1 - t) * (1 - t) * a.y + 2 * (1 - t) * t * c.cy + t * t * b.y
 	});
-	// Keys show when the circle's tickets are far enough apart on screen to read them.
-	const roomy = (id) => {
-		frame;
-		const g = model.groupOf.get(id) || '';
-		const a = anchors.get(g), n = model.groups.get(g)?.length || 1;
-		return a ? (a.r / Math.sqrt(n)) * zoom > 44 : zoom > 0.8;
+	const hash = (s) => {
+		let h = 0;
+		for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+		return (h >>> 0) / 4294967295;
 	};
-	// A circle's name is cut to the circle's width on screen.
-	const fitName = (h) => {
-		const label = `${h.name} · ${h.n}`;
-		const max = Math.max(6, Math.floor((2 * h.r * zoom) / 7));
-		return label.length > max ? h.name.slice(0, Math.max(3, max - 6)) + '… · ' + h.n : label;
-	};
+
+	let raf = 0;
+	let lastDraw = 0;
+	let busy = true; // the layout, camera or a glow moved in the last frame
+	function wake() {
+		busy = true;
+		if (!raf && typeof requestAnimationFrame !== 'undefined') raf = requestAnimationFrame(frame);
+	}
+	function frame(now) {
+		raf = 0;
+		if (!canvas || !view) return;
+		// Only the slow ambient motion left: 30 frames a second is plenty.
+		if (!busy && alpha <= 0.005 && !cam && now - lastDraw < 33) {
+			raf = requestAnimationFrame(frame);
+			return;
+		}
+		lastDraw = now;
+		if (alpha > 0.005) {
+			stepLayout();
+			alpha *= 0.965;
+			if (alpha <= 0.005 && !userMoved) fit(true);
+		}
+		if (cam) {
+			tx += (cam.tx - tx) * 0.18;
+			ty += (cam.ty - ty) * 0.18;
+			zoom += (cam.zoom - zoom) * 0.18;
+			if (Math.abs(cam.tx - tx) < 0.5 && Math.abs(cam.ty - ty) < 0.5 && Math.abs(cam.zoom - zoom) < 0.002)
+				(tx = cam.tx), (ty = cam.ty), (zoom = cam.zoom), (cam = null);
+		}
+		const moving = draw(now);
+		busy = moving || alpha > 0.005 || !!cam;
+		// Keep going while anything animates: the layout, the camera, a glow, the flowing dots and pulses.
+		if (busy || !reduceMotion) raf = requestAnimationFrame(frame);
+	}
+
+	// Draws one frame; returns true while a glow is still easing.
+	function draw(now) {
+		const dpr = window.devicePixelRatio || 1;
+		const w = view.clientWidth, h = view.clientHeight;
+		if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+			canvas.width = Math.round(w * dpr);
+			canvas.height = Math.round(h * dpr);
+		}
+		const ctx = canvas.getContext('2d');
+		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		ctx.clearRect(0, 0, w, h);
+
+		// a quiet dot grid that moves with the map
+		const gs = 28 * zoom;
+		if (gs > 10) {
+			ctx.fillStyle = theme.line;
+			const ox = ((tx % gs) + gs) % gs, oy = ((ty % gs) + gs) % gs;
+			for (let x = ox; x < w; x += gs) for (let y = oy; y < h; y += gs) ctx.fillRect(x - 0.6, y - 0.6, 1.2, 1.2);
+		}
+
+		ctx.setTransform(dpr * zoom, 0, 0, dpr * zoom, dpr * tx, dpr * ty);
+		const m = model;
+		const lit = chain;
+		const on = (id) => !lit || lit.has(id);
+		const t = now / 1000;
+		const sz = 1 / Math.sqrt(zoom); // line widths shrink gently when zoomed in
+
+		// links
+		if (edgeMode !== 'decisions') {
+			for (const l of m.blocks) {
+				const a = pos.get(l.blockerId), b = pos.get(l.issueId);
+				if (!a || !b) continue;
+				const c = curve(a, b);
+				const hot = !!lit && lit.has(l.blockerId) && lit.has(l.issueId);
+				const faded = !!lit && !hot;
+				const ca = m.colour.get(l.blockerId), cb = m.colour.get(l.issueId);
+				const al = faded ? 0.06 : l.done ? 0.22 : hot ? 0.95 : 0.42;
+				const g = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
+				g.addColorStop(0, rgba(ca, al * 0.45));
+				g.addColorStop(1, rgba(cb, al));
+				ctx.strokeStyle = hot ? theme.accent : g;
+				ctx.lineWidth = (hot ? 2.2 : 1.3) * sz;
+				ctx.setLineDash(l.done ? [4 * sz, 4 * sz] : []);
+				ctx.beginPath();
+				ctx.moveTo(a.x, a.y);
+				ctx.quadraticCurveTo(c.cx, c.cy, b.x, b.y);
+				ctx.stroke();
+				ctx.setLineDash([]);
+				// arrow head where the curve meets the ticket it holds up
+				const tEnd = Math.max(0.5, 1 - (radius(l.issueId) + 3) / c.d);
+				const p1 = qpt(a, c, b, tEnd), p0 = qpt(a, c, b, tEnd - 0.04);
+				const ang = Math.atan2(p1.y - p0.y, p1.x - p0.x), s = 5.5 * sz;
+				ctx.fillStyle = hot ? theme.accent : rgba(cb, faded ? 0.08 : 0.75);
+				ctx.beginPath();
+				ctx.moveTo(p1.x, p1.y);
+				ctx.lineTo(p1.x - Math.cos(ang - 0.45) * s, p1.y - Math.sin(ang - 0.45) * s);
+				ctx.lineTo(p1.x - Math.cos(ang + 0.45) * s, p1.y - Math.sin(ang + 0.45) * s);
+				ctx.closePath();
+				ctx.fill();
+				// work flowing from the blocker to the ticket it holds up
+				if (!reduceMotion && !l.done && !faded) {
+					const n = hot ? 3 : 2;
+					for (let k = 0; k < n; k++) {
+						const ph = (t * (hot ? 0.55 : 0.28) + hash(l.blockerId + l.issueId) + k / n) % 1;
+						const pt = qpt(a, c, b, 0.06 + ph * (tEnd - 0.1));
+						ctx.globalAlpha = Math.sin(ph * Math.PI);
+						ctx.fillStyle = hot ? theme.accent : rgba(cb, 0.95);
+						ctx.beginPath();
+						ctx.arc(pt.x, pt.y, (hot ? 2.5 : 1.9) * sz, 0, Math.PI * 2);
+						ctx.fill();
+						ctx.globalAlpha = 1;
+					}
+				}
+			}
+		}
+
+		// decisions
+		if (edgeMode !== 'blocks') {
+			for (const d of m.dec) {
+				const a = pos.get(d.issueId), b = pos.get('d' + d.id);
+				if (!a || !b) continue;
+				ctx.globalAlpha = on(d.issueId) ? 0.85 : 0.12;
+				ctx.strokeStyle = theme.decision;
+				ctx.lineWidth = 1 * sz;
+				ctx.beginPath();
+				ctx.moveTo(a.x, a.y);
+				ctx.lineTo(b.x, b.y);
+				ctx.stroke();
+				ctx.fillStyle = theme.decision;
+				ctx.beginPath();
+				ctx.roundRect(b.x - 3.5, b.y - 3.5, 7, 7, 1.8);
+				ctx.fill();
+				ctx.globalAlpha = 1;
+			}
+		}
+
+		// tickets
+		let easing = false;
+		for (const i of m.shown) {
+			const p = pos.get(i.id);
+			if (!p) continue;
+			const st = m.stateById.get(i.stateId);
+			const col = m.colour.get(i.id);
+			const born = Math.min(1, (now - p.born) / 450);
+			const r = radius(i.id) * (0.4 + 0.6 * (1 - Math.pow(1 - born, 3)));
+			p.target = i.id === hover || i.id === focusId ? 1 : 0;
+			p.glow += (p.target - p.glow) * 0.2;
+			if (Math.abs(p.target - p.glow) > 0.01 || born < 1) easing = true;
+			const faded = !on(i.id);
+			ctx.globalAlpha = faded ? 0.13 : 1;
+			// soft halo
+			const hr = r * (2.6 + p.glow * 1.6);
+			const halo = ctx.createRadialGradient(p.x, p.y, r * 0.5, p.x, p.y, hr);
+			halo.addColorStop(0, rgba(col, theme.dark ? 0.34 : 0.24));
+			halo.addColorStop(1, rgba(col, 0));
+			ctx.fillStyle = halo;
+			ctx.beginPath();
+			ctx.arc(p.x, p.y, hr, 0, Math.PI * 2);
+			ctx.fill();
+			// work in progress breathes
+			if (st?.category === 'started' && st?.name !== 'Blocked' && !reduceMotion && !faded) {
+				const pulse = (t * 0.6 + hash(i.id)) % 1;
+				ctx.strokeStyle = rgba(col, 0.55 * (1 - pulse));
+				ctx.lineWidth = 1.5 * sz;
+				ctx.beginPath();
+				ctx.arc(p.x, p.y, r + 2 + pulse * 10, 0, Math.PI * 2);
+				ctx.stroke();
+			}
+			// the dot itself, lighter towards its top-left
+			const fill = ctx.createRadialGradient(p.x - r * 0.35, p.y - r * 0.35, r * 0.1, p.x, p.y, r);
+			fill.addColorStop(0, lighten(col, 0.5));
+			fill.addColorStop(1, col);
+			ctx.fillStyle = fill;
+			ctx.beginPath();
+			ctx.arc(p.x, p.y, r + p.glow * 1.5, 0, Math.PI * 2);
+			ctx.fill();
+			ctx.strokeStyle = p.glow > 0.05 ? theme.ink : theme.surface;
+			ctx.lineWidth = (1.2 + p.glow) * sz;
+			ctx.stroke();
+			// Next up: a slowly turning dashed ring
+			if (nextIds.has(i.id)) {
+				ctx.strokeStyle = theme.accent;
+				ctx.lineWidth = 1.6 * sz;
+				ctx.setLineDash([3 * sz, 2.5 * sz]);
+				ctx.lineDashOffset = reduceMotion ? 0 : -t * 8 * sz;
+				ctx.beginPath();
+				ctx.arc(p.x, p.y, r + 4.5, 0, Math.PI * 2);
+				ctx.stroke();
+				ctx.setLineDash([]);
+				ctx.lineDashOffset = 0;
+			}
+			if (i.id === focusId) {
+				ctx.strokeStyle = theme.accent;
+				ctx.lineWidth = 2.4 * sz;
+				ctx.beginPath();
+				ctx.arc(p.x, p.y, r + 8, 0, Math.PI * 2);
+				ctx.stroke();
+			}
+			// key beside the dot, when there is room or it is in focus
+			const named = i.id === hover || i.id === focusId;
+			const hub = (m.unblocks.get(i.id) || 0) >= 3; // the busiest tickets keep their key even zoomed out
+			if (named || (!faded && (zoom > 0.9 || (hub && zoom > 0.4) || (lit && zoom > 0.45)))) {
+				ctx.font = `${(named ? 12 : 11) / zoom}px ${theme.mono}`;
+				ctx.fillStyle = named ? theme.ink : theme.ink3;
+				ctx.textBaseline = 'middle';
+				ctx.fillText(i.key, p.x + r + 5 / zoom, p.y);
+			}
+			ctx.globalAlpha = 1;
+		}
+		return easing;
+	}
+
+	// Redraw when something drawn changes outside the animation loop.
+	$effect(() => {
+		model; chain; edgeMode; nextIds; focusId; hover; zoom; tx; ty;
+		untrack(wake);
+	});
+	$effect(() => {
+		if (!canvas || !view) return;
+		readTheme();
+		const mq = matchMedia('(prefers-color-scheme: dark)');
+		const again = () => (readTheme(), wake());
+		mq.addEventListener('change', again);
+		const mo = new MutationObserver(again);
+		mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+		const ro = new ResizeObserver(() => wake());
+		ro.observe(view);
+		wake();
+		return () => {
+			mq.removeEventListener('change', again);
+			mo.disconnect();
+			ro.disconnect();
+			cancelAnimationFrame(raf);
+			raf = 0;
+		};
+	});
+
+	// ── what the overlays show ──────────────────────────────────────────
 	const hoverIssue = $derived(hover ? $allIssues.find((i) => i.id === hover) : null);
 	const waitsOn = (id) => model.blocks.filter((l) => l.issueId === id && !l.done).length;
 	const shownStates = $derived($states.filter((s) => $allIssues.some((i) => i.stateId === s.id)));
 	const countIn = (sid) => $allIssues.filter((i) => i.stateId === sid && (!epic || i.projectId === epic)).length;
-	let cardAt = $state({ x: 0, y: 0 });
-	function enter(e, id) {
-		hover = id;
-		const r = view.getBoundingClientRect();
-		cardAt = { x: e.clientX - r.left + 14, y: e.clientY - r.top + 14 };
-	}
+	const epicName = (i) => $projects.find((p) => p.id === i.projectId)?.name;
 </script>
 
 <svelte:window onmouseup={onUp} onmousemove={onMove} />
@@ -432,80 +658,22 @@
 			<div
 				class="view"
 				class:grabbing={dragging}
+				class:pointing={!!hover && !dragging}
 				bind:this={view}
-				onmousedown={downMap}
+				onmousedown={onDown}
 				onkeydown={onKey}
 				tabindex="0"
 				role="application"
 				aria-label="Ticket network"
 			>
-				<svg class="map" aria-hidden="true">
-					<defs>
-						<marker id="ng-a" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L8,4 L0,8 z" class="ah" /></marker>
-						<marker id="ng-lit" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L8,4 L0,8 z" class="ah lit" /></marker>
-					</defs>
-					<g transform="translate({tx} {ty}) scale({zoom})">
-						{#each hulls as h (h.id)}
-							<circle cx={h.cx} cy={h.cy} r={h.r} class="hull" />
-							<text x={h.cx} y={h.cy - h.r - 6 / zoom} class="hl" style:font-size="{Math.max(11, 12 / zoom)}px">{fitName(h)}<title>{h.name}</title></text>
-						{/each}
-						{#if edgeMode !== 'blocks'}
-							{#each model.dec as d (d.id)}
-								{@const a = P(d.issueId)}
-								{@const b = P('d' + d.id)}
-								<line x1={a.x} y1={a.y} x2={b.x} y2={b.y} class="dl" class:dim={isDim(d.issueId)} />
-							{/each}
-						{/if}
-						{#if edgeMode !== 'decisions'}
-							{#each model.blocks as l (l.blockerId + l.issueId)}
-								{@const g = arrow(l)}
-								{@const lit = edgeLit(l)}
-								<line
-									x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2}
-									class="bl" class:done={l.done} class:lit class:dim={!lit && (neighbours || litIds)}
-									class:across={!lit && model.groupOf.get(l.blockerId) !== model.groupOf.get(l.issueId)}
-									marker-end="url(#ng-{lit ? 'lit' : 'a'})"
-								/>
-							{/each}
-						{/if}
-						{#if edgeMode !== 'blocks'}
-							{#each model.dec as d (d.id)}
-								{@const b = P('d' + d.id)}
-								<rect x={b.x - 4} y={b.y - 4} width="8" height="8" rx="2" class="dq" class:dim={isDim(d.issueId)}>
-									<title>Decision: {d.bodyMd.slice(0, 160)}</title>
-								</rect>
-							{/each}
-						{/if}
-						{#each model.shown as i (i.id)}
-							{@const p = P(i.id)}
-							{@const st = stOf(i)}
-							{@const r = radius(i.id)}
-							<!-- svelte-ignore a11y_no_static_element_interactions -->
-							<g
-								class="nd"
-								class:dim={isDim(i.id)}
-								class:closed={isClosed(st)}
-								onmousedown={(e) => downNode(e, i.id)}
-								onmouseenter={(e) => enter(e, i.id)}
-								onmousemove={(e) => enter(e, i.id)}
-								onmouseleave={() => (hover = '')}
-							>
-								{#if nextIds.has(i.id)}<circle cx={p.x} cy={p.y} r={r + 5} class="ring" />{/if}
-								{#if focusId === i.id}<circle cx={p.x} cy={p.y} r={r + 8} class="found" />{/if}
-								<circle cx={p.x} cy={p.y} {r} style:fill={st?.color || 'var(--line-strong)'} class="dot" />
-								{#if roomy(i.id) || hover === i.id || focusId === i.id}
-									<text x={p.x + r + 4} y={p.y + 3.5} class="lbl">{i.key}</text>
-								{/if}
-							</g>
-						{/each}
-					</g>
-				</svg>
+				<canvas bind:this={canvas} class="map" aria-hidden="true"></canvas>
 
 				{#if hoverIssue && !dragging}
 					{@const st = stOf(hoverIssue)}
 					<div class="card" style:left="{cardAt.x}px" style:top="{cardAt.y}px">
 						<div class="ch"><StateIcon category={st?.category} color={st?.color} name={st?.name} /><span class="key">{hoverIssue.key}</span><span class="stn">{st?.name || ''}</span></div>
 						<div class="ct">{hoverIssue.title}</div>
+						{#if epicName(hoverIssue)}<div class="ce">{epicName(hoverIssue)}</div>{/if}
 						<div class="cm">
 							<span>Waits on <b>{waitsOn(hoverIssue.id)}</b></span>
 							<span>Unblocks <b>{model.unblocks.get(hoverIssue.id) || 0}</b></span>
@@ -529,7 +697,7 @@
 					<button onclick={() => step(1.2)} aria-label="Zoom in" title="Zoom in (+)"><Plus size={14} /></button>
 					<span class="zv">{Math.round(zoom * 100)}%</span>
 					<button onclick={() => step(1 / 1.2)} aria-label="Zoom out" title="Zoom out (−)"><Minus size={14} /></button>
-					<button onclick={fit} aria-label="Fit to screen" title="Fit (0)"><Maximize size={13} /></button>
+					<button onclick={() => fit(true)} aria-label="Fit to screen" title="Fit (0)"><Maximize size={13} /></button>
 				</div>
 			</div>
 		{/if}
@@ -633,6 +801,9 @@
 		cursor: grab;
 		outline: none;
 	}
+	.view.pointing {
+		cursor: pointer;
+	}
 	.view.grabbing {
 		cursor: grabbing;
 	}
@@ -641,83 +812,7 @@
 		inset: 0;
 		width: 100%;
 		height: 100%;
-	}
-	.bl {
-		stroke: var(--ink-3);
-		stroke-width: 1.3;
-		transition: opacity var(--dur) var(--ease);
-	}
-	.bl.done {
-		stroke: var(--line-strong);
-		stroke-dasharray: 3 3;
-	}
-	/* a link between two epics stays faint until its ticket is hovered or found */
-	.bl.across {
-		opacity: 0.18;
-	}
-	.bl.lit {
-		stroke: var(--accent);
-		stroke-width: 2.2;
-	}
-	.ah {
-		fill: var(--ink-3);
-	}
-	.ah.lit {
-		fill: var(--accent);
-	}
-	.dl {
-		stroke: var(--st-review);
-		stroke-width: 1;
-		opacity: 0.6;
-	}
-	.dq {
-		fill: var(--st-review);
-	}
-	.nd {
-		cursor: pointer;
-		transition: opacity var(--dur) var(--ease);
-	}
-	.dot {
-		stroke: var(--surface);
-		stroke-width: 2;
-	}
-	.nd.closed .dot {
-		opacity: 0.45;
-	}
-	.nd:hover .dot {
-		stroke: var(--ink);
-	}
-	.found {
-		fill: none;
-		stroke: var(--accent);
-		stroke-width: 2.5;
-	}
-	.ring {
-		fill: none;
-		stroke: var(--accent);
-		stroke-width: 2;
-		stroke-dasharray: 3 2;
-	}
-	.lbl {
-		font-family: var(--mono);
-		font-size: var(--t-xs);
-		fill: var(--ink-3);
-		pointer-events: none;
-	}
-	.hull {
-		fill: var(--sunken);
-		stroke: var(--line);
-		stroke-width: 1;
-	}
-	.hl {
-		text-anchor: middle;
-		font-weight: 500;
-		fill: var(--ink-2);
-		letter-spacing: 0.02em;
-		pointer-events: none;
-	}
-	.dim {
-		opacity: 0.15;
+		display: block;
 	}
 	.card {
 		position: absolute;
@@ -732,6 +827,13 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--s1);
+		animation: pop var(--dur) var(--ease);
+	}
+	@keyframes pop {
+		from {
+			opacity: 0;
+			transform: translateY(4px);
+		}
 	}
 	.ch {
 		display: flex;
@@ -750,6 +852,10 @@
 		font-family: var(--serif);
 		font-size: var(--t-base);
 		color: var(--ink);
+	}
+	.ce {
+		font-size: var(--t-xs);
+		color: var(--ink-3);
 	}
 	.cm {
 		display: flex;
@@ -901,6 +1007,7 @@
 		padding: var(--s2) var(--s3);
 		cursor: pointer;
 		color: var(--ink);
+		transition: background var(--dur) var(--ease);
 	}
 	.nx:hover,
 	.nx.on {
@@ -986,6 +1093,11 @@
 	@media (max-width: 760px) {
 		.rail {
 			display: none;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.card {
+			animation: none;
 		}
 	}
 </style>
