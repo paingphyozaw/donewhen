@@ -88,11 +88,14 @@
 	let anchors = new Map();
 	function placeAnchors(groups) {
 		const named = [...groups.entries()].filter(([g]) => g).sort((a, b) => b[1].length - a[1].length);
-		const ring = named.length > 1 ? 120 + 45 * named.length : 0;
+		// Space the anchors so neighbouring circles (about 34·√n wide) do not touch.
+		const big = named.length ? 40 + 34 * Math.sqrt(named[0][1].length) : 0;
+		const k = named.length;
+		const ring = k > 1 ? Math.max(big * 1.6, (big + 30) / Math.sin(Math.PI / k)) : 0;
 		anchors = new Map([['', { x: 0, y: 0 }]]);
-		named.forEach(([g], k) => {
-			const a = (k / named.length) * Math.PI * 2 - Math.PI / 2;
-			anchors.set(g, { x: Math.cos(a) * ring * 1.3, y: Math.sin(a) * ring });
+		named.forEach(([g], i) => {
+			const a = (i / k) * Math.PI * 2 - Math.PI / 2;
+			anchors.set(g, { x: Math.cos(a) * ring, y: Math.sin(a) * ring });
 		});
 	}
 	function seed(id, near) {
@@ -303,6 +306,10 @@
 			x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
 			x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
 		}
+		for (const h of hulls) {
+			x0 = Math.min(x0, h.cx - h.r); y0 = Math.min(y0, h.cy - h.r - 16);
+			x1 = Math.max(x1, h.cx + h.r); y1 = Math.max(y1, h.cy + h.r);
+		}
 		// Leave room for the labels, and for the legend along the bottom.
 		const r = view.getBoundingClientRect();
 		const top = 44, bottom = 84, side = 48;
@@ -333,23 +340,20 @@
 		const ra = radius(l.blockerId) + 2, rb = radius(l.issueId) + 5;
 		return { x1: a.x + (dx / d) * ra, y1: a.y + (dy / d) * ra, x2: b.x - (dx / d) * rb, y2: b.y - (dy / d) * rb };
 	}
-	// The box around each epic's island, with its name on top.
+	// The circle around each epic's island, with its name on top.
 	const hulls = $derived.by(() => {
 		frame;
 		if (epic || model.groups.size < 2) return [];
 		const out = [];
 		for (const [g, ids] of model.groups) {
 			if (!g) continue;
-			let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-			for (const id of ids) {
-				const p = pos.get(id);
-				if (!p) continue;
-				const r = radius(id);
-				x0 = Math.min(x0, p.x - r); y0 = Math.min(y0, p.y - r);
-				x1 = Math.max(x1, p.x + r + 44); y1 = Math.max(y1, p.y + r);
-			}
-			if (x0 === Infinity) continue;
-			out.push({ id: g, name: $projects.find((p) => p.id === g)?.name || 'Epic', x: x0 - 16, y: y0 - 30, w: x1 - x0 + 32, h: y1 - y0 + 46 });
+			const pts = ids.map((id) => [id, pos.get(id)]).filter(([, p]) => p);
+			if (!pts.length) continue;
+			const cx = pts.reduce((a, [, p]) => a + p.x, 0) / pts.length;
+			const cy = pts.reduce((a, [, p]) => a + p.y, 0) / pts.length;
+			// Wide enough for every dot and the key beside it.
+			const r = Math.max(40, ...pts.map(([id, p]) => Math.hypot(p.x - cx, p.y - cy) + radius(id) + 16));
+			out.push({ id: g, name: $projects.find((p) => p.id === g)?.name || 'Epic', cx, cy, r });
 		}
 		return out;
 	});
@@ -417,8 +421,8 @@
 					</defs>
 					<g transform="translate({tx} {ty}) scale({zoom})">
 						{#each hulls as h (h.id)}
-							<rect x={h.x} y={h.y} width={h.w} height={h.h} rx="14" class="hull" />
-							<text x={h.x + 12} y={h.y + 18} class="hl">{h.name}</text>
+							<circle cx={h.cx} cy={h.cy} r={h.r} class="hull" />
+							<text x={h.cx} y={h.cy - h.r - 8} class="hl">{h.name}</text>
 						{/each}
 						{#if edgeMode !== 'blocks'}
 							{#each model.dec as d (d.id)}
@@ -676,6 +680,7 @@
 		stroke-width: 1;
 	}
 	.hl {
+		text-anchor: middle;
 		font-size: var(--t-xs);
 		font-weight: 500;
 		fill: var(--ink-2);
