@@ -1,6 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
-	import { aiName } from '$lib/store.js';
+	import { aiName, activeWorkspace, labelGroups, archivedProjects } from '$lib/store.js';
 	import PageHeader from '$components/PageHeader.svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
@@ -12,6 +12,7 @@
 	import LabelPill from '$components/LabelPill.svelte';
 	import { rel } from '$lib/format.js';
 	import { checkMermaid, mermaidBlocks } from '$lib/markdown.js';
+	import { groupDocs, domainGroupIdOf, matchesDoc, isOpen, groupKeys, readPrefs, writePrefs } from '$lib/docgroups.js';
 
 	const TYPES = {
 		change: { label: 'Change', icon: '⟳', color: 'var(--accent)' },
@@ -81,14 +82,7 @@
 		}
 	}
 
-	const filtered = $derived(
-		docs.filter((d) => {
-			if (query.trim() && !d.title.toLowerCase().includes(query.trim().toLowerCase())) return false;
-			if (typeFilter && d.type !== typeFilter) return false;
-			if (aiOnly && d.author !== 'ai') return false;
-			return true;
-		})
-	);
+	const filtered = $derived(docs.filter((d) => matchesDoc(d, { query, type: typeFilter, aiOnly })));
 
 	// ---- the reader ----
 	// selId drives which view shows and rides in the URL (?doc=) so the back
@@ -282,6 +276,53 @@
 		return a && a.kind !== 'issue' ? a : null;
 	}
 
+	// ---- grouping: module → area → documents (BIZ-248) ----
+	// Mode and folded groups are kept per device and per workspace.
+	let groupMode = $state('module');
+	let collapsed = $state(new Set());
+	let prefsFor = null;
+	$effect(() => {
+		const ws = $activeWorkspace?.id;
+		if (!ws || ws === prefsFor) return;
+		prefsFor = ws;
+		const p = typeof localStorage === 'undefined' ? { mode: 'module', collapsed: new Set() } : readPrefs(localStorage, ws);
+		groupMode = p.mode;
+		collapsed = p.collapsed;
+	});
+	function savePrefs() {
+		if (prefsFor && typeof localStorage !== 'undefined') writePrefs(localStorage, prefsFor, { mode: groupMode, collapsed });
+	}
+	function setMode(m) {
+		groupMode = m;
+		savePrefs();
+	}
+	function toggleGroup(key) {
+		const n = new Set(collapsed);
+		n.has(key) ? n.delete(key) : n.add(key);
+		collapsed = n;
+		savePrefs();
+	}
+	const domainGroupId = $derived(domainGroupIdOf($labelGroups));
+	// DOM ids for aria-controls; group keys can hold any characters.
+	const panelId = (key) => 'grp-' + Array.from(key, (c) => (/[A-Za-z0-9_-]/.test(c) ? c : '_' + c.charCodeAt(0).toString(36))).join('');
+	// $issues follows the board filters; issueCache fills the gaps.
+	const knownIssues = $derived([...$issues, ...Object.values(issueCache)]);
+	const groups = $derived(
+		groupDocs(filtered, {
+			initiatives: $initiatives,
+			projects: [...$projects, ...$archivedProjects],
+			issues: knownIssues,
+			domainGroupId
+		})
+	);
+	const open_ = (key) => isOpen(key, collapsed, query);
+	const allKeys = $derived(groupKeys(groups));
+	const anyOpen = $derived(allKeys.some((k) => !collapsed.has(k)));
+	function toggleAll() {
+		collapsed = anyOpen ? new Set([...collapsed, ...allKeys]) : new Set();
+		savePrefs();
+	}
+
 	onMount(() => {
 		load().then((list) => list && checkDiagrams(list));
 		refreshMissing();
@@ -297,6 +338,25 @@
 		});
 	});
 </script>
+
+{#snippet row(d)}
+	{@const key = issueKeyOf(d)}
+	{@const epic = epicOf(d)}
+	<button class="drow" onclick={() => open(d)}>
+		<span class="d-top">
+			<span class="d-ic" style:color={typeMeta(d.type).color}>{typeMeta(d.type).icon}</span>
+			<span class="d-title"><span class="d-tt">{d.title || 'Untitled'}</span>{#if d.type === 'overview'}<span class="ovtag">Overview</span>{/if}{#if d.author === 'ai'}<span class="ai">✦</span>{/if}</span>
+		</span>
+		<span class="d-key">{key || '—'}</span>
+		<span class="d-epic" class:d-dash={!epic}>{#if epic}<span class="ic">{epic.icon}</span>{epic.label}{:else}—{/if}</span>
+		<span class="d-auth"><span class="av" class:ai={d.author === 'ai'}>{d.author === 'ai' ? $aiName.charAt(0).toUpperCase() : 'Y'}</span>{d.author === 'ai' ? $aiName : 'You'}</span>
+		<span class="d-time">{rel(d.updatedAt)}</span>
+		<span class="d-msub">
+			{#if key}<span class="mono">{key}</span><span class="sep">·</span>{:else if epic}<span class="ic">{epic.icon}</span>{epic.label}<span class="sep">·</span>{/if}
+			<span>{rel(d.updatedAt)}</span>
+		</span>
+	</button>
+{/snippet}
 
 <div class="pg">
 	<PageHeader
@@ -477,6 +537,14 @@
 				</div>
 				<span class="sp1"></span>
 				<button class="tchip" class:on={aiOnly} onclick={() => (aiOnly = !aiOnly)}>✦ {$aiName} only</button>
+				<div class="seg" role="group" aria-label="Group documents">
+					<span class="seg-l">Group</span>
+					<button class="tchip" class:on={groupMode === 'module'} aria-pressed={groupMode === 'module'} onclick={() => setMode('module')}>Module</button>
+					<button class="tchip" class:on={groupMode === 'none'} aria-pressed={groupMode === 'none'} onclick={() => setMode('none')}>None</button>
+				</div>
+				{#if groupMode === 'module'}
+					<button class="tchip" disabled={!!query.trim() || !groups.length} onclick={toggleAll}>{anyOpen ? 'Collapse all' : 'Expand all'}</button>
+				{/if}
 			</div>
 
 			{#if loading && !docs.length}
@@ -498,29 +566,52 @@
 					<button class="btn primary" onclick={() => quickCapture.set(true)}>New issue</button>
 				</div>
 			{:else}
-				<div class="dlist">
-					<div class="dhead"><span></span><span>Title</span><span>Issue</span><span>Epic</span><span>Author</span><span>Updated</span></div>
-					{#each filtered as d (d.id)}
-						{@const key = issueKeyOf(d)}
-						{@const epic = epicOf(d)}
-						<button class="drow" onclick={() => open(d)}>
-							<span class="d-top">
-								<span class="d-ic" style:color={typeMeta(d.type).color}>{typeMeta(d.type).icon}</span>
-								<span class="d-title">{d.title || 'Untitled'}{#if d.author === 'ai'}<span class="ai">✦</span>{/if}</span>
-							</span>
-							<span class="d-key">{key || '—'}</span>
-							<span class="d-epic" class:d-dash={!epic}>{#if epic}<span class="ic">{epic.icon}</span>{epic.label}{:else}—{/if}</span>
-							<span class="d-auth"><span class="av" class:ai={d.author === 'ai'}>{d.author === 'ai' ? $aiName.charAt(0).toUpperCase() : 'Y'}</span>{d.author === 'ai' ? $aiName : 'You'}</span>
-							<span class="d-time">{rel(d.updatedAt)}</span>
-							<span class="d-msub">
-								{#if key}<span class="mono">{key}</span><span class="sep">·</span>{:else if epic}<span class="ic">{epic.icon}</span>{epic.label}<span class="sep">·</span>{/if}
-								<span>{rel(d.updatedAt)}</span>
-							</span>
-						</button>
+				{#if groupMode === 'none'}
+					<div class="dlist">
+						<div class="dhead"><span></span><span>Title</span><span>Issue</span><span>Epic</span><span>Author</span><span>Updated</span></div>
+						{#each filtered as d (d.id)}
+							{@render row(d)}
+						{:else}
+							<div class="empty faint">No matches.</div>
+						{/each}
+					</div>
+				{:else}
+					{#each groups as m (m.key)}
+						{@const mOpen = open_(m.key)}
+						<section class="mod">
+							<button class="mod-h" onclick={() => toggleGroup(m.key)} aria-expanded={mOpen} aria-controls={panelId(m.key)}>
+								<span class="chv" class:open={mOpen}>›</span>
+								<span class="mod-n">{m.name}</span>
+								<span class="cnt">{m.count}</span>
+							</button>
+							{#if mOpen}
+								<div class="dlist" id={panelId(m.key)}>
+									<div class="dhead"><span></span><span>Title</span><span>Issue</span><span>Epic</span><span>Author</span><span>Updated</span></div>
+									{#each m.overviews as d (d.id)}
+										{@render row(d)}
+									{/each}
+									{#each m.areas as a (a.key)}
+										{@const aOpen = open_(a.key)}
+										<button class="area-h" onclick={() => toggleGroup(a.key)} aria-expanded={aOpen} aria-controls={panelId(a.key)}>
+											<span class="chv" class:open={aOpen}>›</span>
+											<span class="area-n" class:faint={!a.id}>{a.name}</span>
+											<span class="cnt">{a.count}</span>
+										</button>
+										{#if aOpen}
+											<div class="area-b" id={panelId(a.key)}>
+												{#each a.docs as d (d.id)}
+													{@render row(d)}
+												{/each}
+											</div>
+										{/if}
+									{/each}
+								</div>
+							{/if}
+						</section>
 					{:else}
-						<div class="empty faint">No matches.</div>
+						<div class="dlist"><div class="empty faint">No matches.</div></div>
 					{/each}
-				</div>
+				{/if}
 			{/if}
 		</div>
 	{/if}
@@ -592,6 +683,25 @@
 	.d-time { font-size: var(--t-xs); color: var(--ink-3); text-align: right; }
 	.d-msub { display: none; align-items: center; gap: 5px; font-size: var(--t-xs); color: var(--ink-3); padding-left: 21px; }
 	.d-msub .sep { color: var(--ink-3); }
+	.d-tt { overflow: hidden; text-overflow: ellipsis; }
+	.ovtag { flex: none; font-family: var(--mono); font-weight: 500; font-size: var(--t-xs); color: var(--st-ready); background: color-mix(in srgb, var(--st-ready) 14%, var(--surface)); border-radius: 999px; padding: 0 7px; height: 17px; display: inline-flex; align-items: center; }
+
+	.seg { display: inline-flex; align-items: center; gap: 6px; }
+	.seg-l { font-size: var(--t-xs); color: var(--ink-3); }
+	.tchip:disabled { opacity: 0.5; }
+	.mod { flex: none; margin-bottom: 14px; }
+	.mod-h { display: flex; align-items: center; gap: 8px; width: 100%; padding: 2px 2px 8px; background: none; border: none; text-align: left; font: 600 var(--t-xs) var(--mono); color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.05em; }
+	.mod-h:hover { color: var(--ink); }
+	.mod-n { color: var(--ink-2); }
+	.cnt { font-family: var(--mono); font-weight: 500; font-size: var(--t-xs); color: var(--ink-3); }
+	.chv { display: inline-block; width: 10px; color: var(--ink-3); transition: transform 0.12s ease; }
+	.chv.open { transform: rotate(90deg); }
+	@media (prefers-reduced-motion: reduce) { .chv { transition: none; } }
+	.area-h { display: flex; align-items: center; gap: 8px; width: 100%; height: 30px; padding: 0 14px; background: var(--sunken); border: none; border-bottom: 1px solid var(--line); text-align: left; font-size: var(--t-sm); font-weight: 500; color: var(--ink-2); }
+	.area-h:hover { color: var(--ink); background: var(--hover); }
+	.dlist > .area-h:last-child { border-bottom: 0; }
+	.area-b { display: contents; }
+	.dlist > .area-b:last-child > .drow:last-child { border-bottom: 0; }
 	.empty { padding: 30px 14px; text-align: center; font-size: var(--t-sm); line-height: 1.5; }
 
 	.hero { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; text-align: center; padding: 40px 20px; }
