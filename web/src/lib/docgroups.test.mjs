@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { moduleIdOf, areaOf, groupDocs, matchesDoc, isOpen, groupKeys, readPrefs, writePrefs } from './docgroups.js';
+import { moduleIdOf, areaOf, domainGroupIdOf, groupDocs, matchesDoc, isOpen, groupKeys, readPrefs, writePrefs } from './docgroups.js';
 
 const initiatives = [
 	{ id: 'ini-pos', name: 'POS' },
@@ -167,4 +167,35 @@ test('prefs round-trip per workspace and fall back when storage fails', () => {
 	// junk JSON → defaults
 	mem.set('donewhen.artifacts.prefs.ws3', '{not json');
 	assert.equal(readPrefs(store, 'ws3').mode, 'module');
+});
+
+test('domain group must be named domain AND exclusive', () => {
+	assert.equal(domainGroupIdOf([{ id: 'g1', name: 'domain', exclusive: false }, { id: 'g2', name: 'Domain', exclusive: true }]), 'g2');
+	assert.equal(domainGroupIdOf([{ id: 'g1', name: 'domain', exclusive: false }]), '');
+	assert.equal(domainGroupIdOf([{ id: 'g3', name: 'type', exclusive: true }]), '');
+	assert.equal(domainGroupIdOf(), '');
+});
+
+test('an epic found only in the archived list still gives the module', () => {
+	const archived = [{ id: 'ep-old', name: 'Old POS epic', initiativeId: 'ini-pos', archived: true }];
+	const g = groupDocs([doc('arch', { projectId: 'ep-old' }), doc('arch-is', { issueId: 'is-old' })], {
+		...ctx,
+		projects: [...projects, ...archived],
+		issues: [...issues, { id: 'is-old', key: 'BIZ-1', projectId: 'ep-old' }]
+	});
+	assert.deepEqual(g.map((m) => m.name), ['POS']);
+	assert.equal(g[0].count, 2);
+	// without the archived epic the same docs fall to No module
+	assert.deepEqual(groupDocs([doc('arch', { projectId: 'ep-old' })], ctx).map((m) => m.name), ['No module']);
+});
+
+test('a non-domain label next to a domain label: the domain label decides the area', () => {
+	const labels = [lb('docs', 'g-type'), lb('Purchase & stock'), lb('urgent', 'g-other')];
+	const g = groupDocs([doc('mix', { issueId: 'is-245', labels })], ctx);
+	assert.equal(g[0].name, 'POS');
+	assert.deepEqual(g[0].areas.map((a) => a.name), ['Purchase & stock']);
+	assert.equal(g[0].areas[0].key, 'a:ini-pos:l-Purchase & stock');
+	// label order does not matter
+	const g2 = groupDocs([doc('mix', { issueId: 'is-245', labels: [...labels].reverse() })], ctx);
+	assert.deepEqual(g2[0].areas.map((a) => a.name), ['Purchase & stock']);
 });

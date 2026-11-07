@@ -12,7 +12,7 @@
 	import LabelPill from '$components/LabelPill.svelte';
 	import { rel } from '$lib/format.js';
 	import { checkMermaid, mermaidBlocks } from '$lib/markdown.js';
-	import { groupDocs, matchesDoc, isOpen, groupKeys, readPrefs, writePrefs } from '$lib/docgroups.js';
+	import { groupDocs, domainGroupIdOf, matchesDoc, isOpen, groupKeys, readPrefs, writePrefs } from '$lib/docgroups.js';
 
 	const TYPES = {
 		change: { label: 'Change', icon: '⟳', color: 'var(--accent)' },
@@ -302,7 +302,9 @@
 		collapsed = n;
 		savePrefs();
 	}
-	const domainGroupId = $derived($labelGroups.find((g) => g.name.toLowerCase() === 'domain')?.id || '');
+	const domainGroupId = $derived(domainGroupIdOf($labelGroups));
+	// DOM ids for aria-controls; group keys can hold any characters.
+	const panelId = (key) => 'grp-' + Array.from(key, (c) => (/[A-Za-z0-9_-]/.test(c) ? c : '_' + c.charCodeAt(0).toString(36))).join('');
 	// $issues follows the board filters; issueCache fills the gaps.
 	const knownIssues = $derived([...$issues, ...Object.values(issueCache)]);
 	const groups = $derived(
@@ -577,28 +579,30 @@
 					{#each groups as m (m.key)}
 						{@const mOpen = open_(m.key)}
 						<section class="mod">
-							<button class="mod-h" onclick={() => toggleGroup(m.key)} aria-expanded={mOpen}>
+							<button class="mod-h" onclick={() => toggleGroup(m.key)} aria-expanded={mOpen} aria-controls={panelId(m.key)}>
 								<span class="chv" class:open={mOpen}>›</span>
 								<span class="mod-n">{m.name}</span>
 								<span class="cnt">{m.count}</span>
 							</button>
 							{#if mOpen}
-								<div class="dlist">
+								<div class="dlist" id={panelId(m.key)}>
 									<div class="dhead"><span></span><span>Title</span><span>Issue</span><span>Epic</span><span>Author</span><span>Updated</span></div>
 									{#each m.overviews as d (d.id)}
 										{@render row(d)}
 									{/each}
 									{#each m.areas as a (a.key)}
 										{@const aOpen = open_(a.key)}
-										<button class="area-h" onclick={() => toggleGroup(a.key)} aria-expanded={aOpen}>
+										<button class="area-h" onclick={() => toggleGroup(a.key)} aria-expanded={aOpen} aria-controls={panelId(a.key)}>
 											<span class="chv" class:open={aOpen}>›</span>
 											<span class="area-n" class:faint={!a.id}>{a.name}</span>
 											<span class="cnt">{a.count}</span>
 										</button>
 										{#if aOpen}
-											{#each a.docs as d (d.id)}
-												{@render row(d)}
-											{/each}
+											<div class="area-b" id={panelId(a.key)}>
+												{#each a.docs as d (d.id)}
+													{@render row(d)}
+												{/each}
+											</div>
 										{/if}
 									{/each}
 								</div>
@@ -696,6 +700,8 @@
 	.area-h { display: flex; align-items: center; gap: 8px; width: 100%; height: 30px; padding: 0 14px; background: var(--sunken); border: none; border-bottom: 1px solid var(--line); text-align: left; font-size: var(--t-sm); font-weight: 500; color: var(--ink-2); }
 	.area-h:hover { color: var(--ink); background: var(--hover); }
 	.dlist > .area-h:last-child { border-bottom: 0; }
+	.area-b { display: contents; }
+	.dlist > .area-b:last-child > .drow:last-child { border-bottom: 0; }
 	.empty { padding: 30px 14px; text-align: center; font-size: var(--t-sm); line-height: 1.5; }
 
 	.hero { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; text-align: center; padding: 40px 20px; }

@@ -6,14 +6,32 @@ const RESEARCH_AREA = 'research & decisions';
 const NO_MODULE = 'No module';
 const NO_AREA = 'No area';
 
+// domainGroupIdOf picks the area group: named `domain` AND exclusive, so a
+// document can never hold two areas. '' when the workspace has none.
+export function domainGroupIdOf(labelGroups = []) {
+	return labelGroups.find((g) => g.exclusive === true && (g.name || '').trim().toLowerCase() === 'domain')?.id || '';
+}
+
+// indexFor builds the id lookups once, so grouping stays linear in documents.
+export function indexFor({ projects = [], issues = [], initiatives = [] }) {
+	return {
+		epicById: new Map(projects.map((p) => [p.id, p])),
+		issueById: new Map(issues.map((i) => [i.id, i])),
+		iniById: new Map(initiatives.map((ini) => [ini.id, ini])),
+		iniRank: new Map(initiatives.map((ini, i) => [ini.id, i]))
+	};
+}
+
 // moduleIdOf returns the document's initiative id: its own, else its epic's,
-// else its issue's epic's. '' = no module.
-export function moduleIdOf(doc, { projects = [], issues = [] }) {
+// else its issue's epic's. '' = no module. Pass an index from indexFor, or the
+// raw { projects, issues } lists.
+export function moduleIdOf(doc, ctx) {
 	if (doc.initiativeId) return doc.initiativeId;
-	const epicIni = (epicId) => projects.find((p) => p.id === epicId)?.initiativeId || '';
+	const { epicById, issueById } = ctx.epicById ? ctx : indexFor(ctx);
+	const epicIni = (epicId) => epicById.get(epicId)?.initiativeId || '';
 	if (doc.projectId) return epicIni(doc.projectId);
 	if (doc.issueId) {
-		const is = issues.find((i) => i.id === doc.issueId);
+		const is = issueById.get(doc.issueId);
 		return is?.projectId ? epicIni(is.projectId) : '';
 	}
 	return '';
@@ -37,9 +55,10 @@ function byOverviewThenNewest(a, b) {
 // (overview type with no area, or in "Research & decisions") is shown once, at
 // the top of the module, and not again inside its area.
 export function groupDocs(docs, { initiatives = [], projects = [], issues = [], domainGroupId = '' }) {
+	const idx = indexFor({ projects, issues, initiatives });
 	const mods = new Map();
 	for (const d of docs) {
-		const mid = moduleIdOf(d, { projects, issues });
+		const mid = moduleIdOf(d, idx);
 		if (!mods.has(mid)) mods.set(mid, { overviews: [], areas: new Map(), count: 0 });
 		const m = mods.get(mid);
 		m.count++;
@@ -53,9 +72,8 @@ export function groupDocs(docs, { initiatives = [], projects = [], issues = [], 
 		m.areas.get(aid).docs.push(d);
 	}
 
-	const order = new Map(initiatives.map((ini, i) => [ini.id, i]));
-	const rank = (id) => (id === '' ? Infinity : order.has(id) ? order.get(id) : initiatives.length);
-	const nameOf = (id) => (id === '' ? NO_MODULE : initiatives.find((i) => i.id === id)?.name || 'Project');
+	const rank = (id) => (id === '' ? Infinity : idx.iniRank.has(id) ? idx.iniRank.get(id) : initiatives.length);
+	const nameOf = (id) => (id === '' ? NO_MODULE : idx.iniById.get(id)?.name || 'Project');
 
 	return [...mods.entries()]
 		.map(([id, m]) => ({
