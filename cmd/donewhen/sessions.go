@@ -62,10 +62,11 @@ type cacheCreation struct {
 }
 
 type record struct {
-	line transcriptLine
-	at   time.Time
-	ok   bool // at was parsed
-	any  bool // belongs to the session whatever its sessionId (subagent file)
+	line  transcriptLine
+	at    time.Time
+	ok    bool   // at was parsed
+	any   bool   // belongs to the session whatever its sessionId (subagent file)
+	agent string // the subagent run whose transcript holds the line; "" for the main one
 }
 
 // readRecords decodes every line it can; a line that is not JSON is skipped.
@@ -111,11 +112,32 @@ func cacheWrites(total int64, split *cacheCreation) (w5, w1 int64) {
 // once, from the last line of the message. ok is false when no model message
 // was found.
 func parseTranscript(stem string, whole bool, main io.Reader, subagents ...io.Reader) (models.AgentSession, []models.SessionMessage, bool, error) {
+	srcs := []source{{r: main}}
+	for _, r := range subagents {
+		srcs = append(srcs, source{r: r})
+	}
+	return parseSources(stem, whole, srcs)
+}
+
+// source is one transcript file of a session. agent is the id of the
+// subagent run that wrote it ("" for the main transcript).
+type source struct {
+	r     io.Reader
+	agent string
+}
+
+// parseSources is parseTranscript over sources that know their subagent run
+// (BIZ-282): each message carries the run whose transcript first holds it, so
+// a message a fork copied from the main transcript stays the coordinator's.
+func parseSources(stem string, whole bool, srcs []source) (models.AgentSession, []models.SessionMessage, bool, error) {
 	var recs []record
-	for i, r := range append([]io.Reader{main}, subagents...) {
-		got, err := readRecords(r)
+	for i, src := range srcs {
+		got, err := readRecords(src.r)
 		if err != nil {
 			return models.AgentSession{}, nil, false, err
+		}
+		for j := range got {
+			got[j].agent = src.agent
 		}
 		if i > 0 || whole {
 			for j := range got {
@@ -181,7 +203,7 @@ func parseTranscript(stem string, whole bool, main io.Reader, subagents ...io.Re
 		}
 		m, seen := byID[id]
 		if !seen {
-			m = &models.SessionMessage{ID: id}
+			m = &models.SessionMessage{ID: id, AgentID: rec.agent}
 			if rec.ok {
 				m.At = rec.at
 			}
@@ -215,6 +237,17 @@ type sessionPayload struct {
 	StartedAt   time.Time        `json:"startedAt"`
 	EndedAt     time.Time        `json:"endedAt"`
 	Messages    []messagePayload `json:"messages"`
+	Agents      []agentPayload   `json:"agents"`
+}
+
+// agentPayload is one subagent run, from its agent-<id>.meta.json. The
+// description is the short task title the coordinator gave the run: the only
+// free text that leaves the machine.
+type agentPayload struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Description string `json:"description"`
+	Model       string `json:"model,omitempty"`
 }
 
 // messagePayload is one message's usage. id is Claude's opaque message id.
@@ -228,17 +261,22 @@ type messagePayload struct {
 	CacheReadTokens    int64      `json:"cacheReadTokens"`
 	CacheWrite5mTokens int64      `json:"cacheWrite5mTokens"`
 	CacheWrite1hTokens int64      `json:"cacheWrite1hTokens"`
+	AgentID            string     `json:"agentId,omitempty"` // the subagent run; none for the coordinator
 }
 
-func payloadFor(s models.AgentSession, msgs []models.SessionMessage) sessionPayload {
+func payloadFor(s models.AgentSession, msgs []models.SessionMessage, agents []agentPayload) sessionPayload {
 	p := sessionPayload{ProjectPath: s.ProjectPath, GitBranch: s.GitBranch, IssueKeys: s.IssueKeys,
-		StartedAt: s.StartedAt, EndedAt: s.EndedAt, Messages: []messagePayload{}}
+		StartedAt: s.StartedAt, EndedAt: s.EndedAt, Messages: []messagePayload{}, Agents: agents}
+	if p.Agents == nil {
+		p.Agents = []agentPayload{}
+	}
 	if p.IssueKeys == nil {
 		p.IssueKeys = []string{}
 	}
 	for _, m := range msgs {
 		mp := messagePayload{ID: m.ID, Model: m.Model, Branch: m.Branch, InputTokens: m.InputTokens, OutputTokens: m.OutputTokens,
-			CacheReadTokens: m.CacheReadTokens, CacheWrite5mTokens: m.CacheWrite5mTokens, CacheWrite1hTokens: m.CacheWrite1hTokens}
+			CacheReadTokens: m.CacheReadTokens, CacheWrite5mTokens: m.CacheWrite5mTokens, CacheWrite1hTokens: m.CacheWrite1hTokens,
+			AgentID: m.AgentID}
 		if !m.At.IsZero() {
 			at := m.At
 			mp.At = &at
@@ -259,21 +297,22 @@ type pushClient struct {
 
 // push sends a session in chunks of pushChunkSize messages and returns the
 // server's view after the last one. A PUT is additive on the server, so the
-// chunks add up to one push.
-func (c pushClient) push(ctx context.Context, s models.AgentSession, msgs []models.SessionMessage) (models.AgentSession, error) {
+// chunks add up to one push. Every chunk carries the runs, so each chunk's
+// messages find their run's ticket key.
+func (c pushClient) push(ctx context.Context, s models.AgentSession, msgs []models.SessionMessage, agents []agentPayload) (models.AgentSession, error) {
 	var saved models.AgentSession
 	for start := 0; start < len(msgs); start += pushChunkSize {
 		end := min(start+pushChunkSize, len(msgs))
 		var err error
-		if saved, err = c.put(ctx, s, msgs[start:end]); err != nil {
+		if saved, err = c.put(ctx, s, msgs[start:end], agents); err != nil {
 			return saved, err
 		}
 	}
 	return saved, nil
 }
 
-func (c pushClient) put(ctx context.Context, s models.AgentSession, msgs []models.SessionMessage) (models.AgentSession, error) {
-	body, err := json.Marshal(payloadFor(s, msgs))
+func (c pushClient) put(ctx context.Context, s models.AgentSession, msgs []models.SessionMessage, agents []agentPayload) (models.AgentSession, error) {
+	body, err := json.Marshal(payloadFor(s, msgs, agents))
 	if err != nil {
 		return models.AgentSession{}, err
 	}
@@ -391,23 +430,68 @@ func findTranscripts(dir string) ([]transcript, error) {
 	return out, err
 }
 
-func readTranscript(t transcript) (models.AgentSession, []models.SessionMessage, bool, error) {
+// agentIDOf is the run id in a subagent transcript's name: agent-<id>.jsonl.
+func agentIDOf(path string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "agent-"), ".jsonl")
+}
+
+// agentMeta is everything the importer reads from agent-<id>.meta.json. Other
+// keys (toolUseId, parentAgentId, …) are not decoded.
+type agentMeta struct {
+	AgentType   string `json:"agentType"`
+	Description string `json:"description"`
+	Model       string `json:"model"`
+}
+
+// maxAgentDescription matches the server's limit; a longer title is cut.
+const maxAgentDescription = 300
+
+// readAgent reads the run next to a subagent transcript. A missing or broken
+// meta file still gives the run, with its id only.
+func readAgent(path string) agentPayload {
+	id := agentIDOf(path)
+	a := agentPayload{ID: id}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(path), "agent-"+id+".meta.json"))
+	if err != nil {
+		return a
+	}
+	var m agentMeta
+	if json.Unmarshal(raw, &m) != nil {
+		return a
+	}
+	a.Type, a.Model = m.AgentType, m.Model
+	a.Description = strings.TrimSpace(m.Description)
+	if r := []rune(a.Description); len(r) > maxAgentDescription {
+		a.Description = string(r[:maxAgentDescription])
+	}
+	return a
+}
+
+func readTranscript(t transcript) (models.AgentSession, []models.SessionMessage, []agentPayload, bool, error) {
 	var files []*os.File
 	defer func() {
 		for _, f := range files {
 			f.Close()
 		}
 	}()
-	var readers []io.Reader
-	for _, p := range append([]string{t.main}, t.subagents...) {
+	var srcs []source
+	agents := []agentPayload{}
+	for i, p := range append([]string{t.main}, t.subagents...) {
 		f, err := os.Open(p)
 		if err != nil {
-			return models.AgentSession{}, nil, false, err
+			return models.AgentSession{}, nil, nil, false, err
 		}
 		files = append(files, f)
-		readers = append(readers, f)
+		src := source{r: f}
+		if i > 0 || t.whole { // a subagent transcript
+			a := readAgent(p)
+			src.agent = a.ID
+			agents = append(agents, a)
+		}
+		srcs = append(srcs, src)
 	}
-	return parseTranscript(t.session, t.whole, readers[0], readers[1:]...)
+	s, msgs, ok, err := parseSources(t.session, t.whole, srcs)
+	return s, msgs, agents, ok, err
 }
 
 func readTokenFile(env func(string) string) string {
@@ -491,7 +575,7 @@ func runSessions(args []string, env func(string) string, stdout, stderr io.Write
 	failed := false
 	ctx := context.Background()
 	for _, t := range list {
-		s, msgs, ok, err := readTranscript(t)
+		s, msgs, agents, ok, err := readTranscript(t)
 		if err != nil {
 			fmt.Fprintf(stderr, "failed %s: %v\n", t.main, err)
 			failed = true
@@ -500,7 +584,7 @@ func runSessions(args []string, env func(string) string, stdout, stderr io.Write
 		if !ok {
 			continue // nothing a model said: nothing to record
 		}
-		saved, err := client.push(ctx, s, msgs)
+		saved, err := client.push(ctx, s, msgs, agents)
 		if err != nil {
 			fmt.Fprintf(stderr, "failed %s: %v\n", s.ExternalID, err)
 			failed = true
