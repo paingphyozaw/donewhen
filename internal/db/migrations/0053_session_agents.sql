@@ -20,4 +20,7 @@ CREATE INDEX ai_session_agents_session_idx ON ai_session_agents (session_id);
 -- The subagent run that made the message; null means the coordinator (the
 -- session's main transcript).
 ALTER TABLE ai_session_messages ADD COLUMN agent_id text;
+-- The ticket key the message's branch names ('' for none); null for a message
+-- saved before 0053 and not pushed since. issue_key is the run's key, else this.
+ALTER TABLE ai_session_messages ADD COLUMN branch_key text;
 CREATE INDEX ai_session_messages_agent_idx ON ai_session_messages (workspace_id, agent_id);

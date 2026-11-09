@@ -6,20 +6,27 @@ import (
 )
 
 func TestIssueKeyFromText(t *testing.T) {
+	prefixes := []string{"BIZ", "CLT"} // the workspace's own prefix first
 	for in, want := range map[string]string{
 		"Build BIZ-278 sessions backend": "BIZ-278",
 		"Review BIZ-9":                   "BIZ-9",
 		"Final check BIZ-121 11c3a9f":    "BIZ-121",
 		"Fix BIZ-119..125 order":         "BIZ-119",
 		"(CLT-4) hotfix":                 "CLT-4",
+		"Fix UTF-8 bug for BIZ-12":       "BIZ-12",
+		"Parse ISO-8601 dates":           "",
+		"Port CLT-3 then BIZ-7":          "BIZ-7", // the workspace's own prefix wins
 		"Find the sessions code":         "",
 		"biz-12 lower case":              "",
 		"XBIZ-12x":                       "",
 		"":                               "",
 	} {
-		if got := IssueKeyFromText(in); got != want {
+		if got := IssueKeyFromText(in, prefixes); got != want {
 			t.Errorf("%q → %q, want %q", in, got, want)
 		}
+	}
+	if got := IssueKeyFromText("Build BIZ-1", nil); got != "" {
+		t.Errorf("no known prefix → %q", got)
 	}
 }
 

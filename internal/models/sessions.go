@@ -141,17 +141,37 @@ type SessionSummaryRow struct {
 // starting with a letter, so `release-2026` is not read as a ticket.
 var branchKeyRe = regexp.MustCompile(`(?:^|/)([A-Za-z][A-Za-z0-9]{1,5})-([0-9]+)(?:$|[-/_.])`)
 
-// textKeyRe finds an upper-case ticket key anywhere in a run's description:
-// "Build BIZ-278 sessions backend" → BIZ-278.
-var textKeyRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9])([A-Z][A-Z0-9]{1,5}-[0-9]+)(?:$|[^A-Za-z0-9])`)
+// textKeyRe finds an upper-case key shape anywhere in a run's description.
+// UTF-8 and ISO-8601 have the shape too, so a match counts only when its
+// prefix is a real issue prefix (see IssueKeyFromText).
+var textKeyRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9])([A-Z][A-Z0-9]*)-([0-9]+)(?:$|[^A-Za-z0-9])`)
 
-// IssueKeyFromText returns the first upper-case ticket key a short text
-// names, or "".
-func IssueKeyFromText(s string) string {
-	if m := textKeyRe.FindStringSubmatch(s); m != nil {
-		return m[1]
+// IssueKeyFromText returns the ticket key a short text names, or "". Only
+// keys whose prefix is in prefixes count; the earliest prefix in the list
+// wins (callers put the workspace's own prefix first), then the first in the
+// text. "Fix UTF-8 bug for BIZ-12" → BIZ-12.
+func IssueKeyFromText(s string, prefixes []string) string {
+	rank := map[string]int{}
+	for i, p := range prefixes {
+		p = strings.ToUpper(strings.TrimSpace(p))
+		if _, ok := rank[p]; !ok && p != "" {
+			rank[p] = i
+		}
 	}
-	return ""
+	best, bestRank := "", len(prefixes)
+	// Matches may share a separator ("BIZ-1 BIZ-2"), so scan from each match end - 1.
+	for i := 0; i < len(s); {
+		loc := textKeyRe.FindStringSubmatchIndex(s[i:])
+		if loc == nil {
+			break
+		}
+		prefix, num := s[i+loc[2]:i+loc[3]], s[i+loc[4]:i+loc[5]]
+		if r, ok := rank[prefix]; ok && r < bestRank {
+			best, bestRank = prefix+"-"+num, r
+		}
+		i += loc[5]
+	}
+	return best
 }
 
 // IssueKeysFromBranch returns the ticket keys a branch name carries, upper

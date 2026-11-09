@@ -300,3 +300,103 @@ func TestSessionAgentsInvalid(t *testing.T) {
 		}
 	}
 }
+
+// A run key that was wrong (or a description edited) is cleaned by a re-push:
+// a run that no longer names a key gives its messages back their branch key.
+// UTF-8 is not a ticket key.
+func TestSessionAgentsRefreshRestoresBranchKey(t *testing.T) {
+	e := newEnv(t, config.Config{})
+	owner, _ := e.user("")
+	w := e.workspace(owner)
+	ai := bearer(e.token(owner, w.ID))
+	const pfx = "BIZ" // allowed through the branch's key
+	const br = "feature/biz-50-x"
+	body := func(desc string) map[string]any {
+		b := sessionBody(br, "2026-11-05T09:00:00Z", "2026-11-05T11:00:00Z",
+			byAgent(onBranch(msg("u1", "claude-opus-5-5", "2026-11-05T10:00:00Z", 1_000_000, 0, 0, 0, 0), br), "ag-u"))
+		b["agents"] = []map[string]any{agentReq("ag-u", "implementer", desc)}
+		return b
+	}
+	if r := e.do("PUT", "/api/sessions/u", body("Fix UTF-8 bug for "+pfx+"-12"), ai); r.Code != 200 {
+		t.Fatalf("put: %d %s", r.Code, r.Body.String())
+	}
+	issue := summary(t, e, "?group=issue", ai)
+	if _, bad := issue["UTF-8"]; bad || !near(issue[pfx+"-12"].CostUSD, 4) {
+		t.Fatalf("keys = %+v", issue)
+	}
+	// The run's title changes to one without a key: the branch key comes back.
+	if r := e.do("PUT", "/api/sessions/u", body("Fix the parser"), ai); r.Code != 200 {
+		t.Fatalf("re-put: %d %s", r.Code, r.Body.String())
+	}
+	issue = summary(t, e, "?group=issue", ai)
+	if _, stale := issue[pfx+"-12"]; stale || !near(issue[pfx+"-50"].CostUSD, 4) {
+		t.Fatalf("after re-push = %+v", issue)
+	}
+	// A push of another part of the session (no message of the run) keeps it.
+	other := sessionBody(br, "2026-11-05T09:00:00Z", "2026-11-05T11:00:00Z",
+		onBranch(msg("u2", "claude-opus-5-5", "2026-11-05T10:05:00Z", 1_000_000, 0, 0, 0, 0), br))
+	if r := e.do("PUT", "/api/sessions/u", other, ai); r.Code != 200 {
+		t.Fatalf("part put: %d %s", r.Code, r.Body.String())
+	}
+	if r := summary(t, e, "?group=issue", ai)[pfx+"-50"]; !near(r.CostUSD, 8) {
+		t.Fatalf("after part push = %+v", r)
+	}
+}
+
+// A session that runs agents for its own branch ticket too is that ticket's
+// work: its coordinator messages are not overhead.
+func TestSessionCoordinatorOnOwnTicket(t *testing.T) {
+	e := newEnv(t, config.Config{})
+	owner, _ := e.user("")
+	w := e.workspace(owner)
+	ai := bearer(e.token(owner, w.ID))
+	const br = "feature/biz-282-sessions"
+	body := sessionBody(br, "2026-11-05T09:00:00Z", "2026-11-05T11:00:00Z",
+		onBranch(msg("o1", "claude-opus-5-5", "2026-11-05T10:00:00Z", 1_000_000, 0, 0, 0, 0), br),
+		byAgent(onBranch(msg("o2", "claude-opus-5-5", "2026-11-05T10:01:00Z", 1_000_000, 0, 0, 0, 0), br), "ag-own"),
+		byAgent(onBranch(msg("o3", "claude-opus-5-5", "2026-11-05T10:02:00Z", 1_000_000, 0, 0, 0, 0), br), "ag-other"))
+	body["agents"] = []map[string]any{agentReq("ag-own", "implementer", "Build BIZ-282 views"), agentReq("ag-other", "reviewer", "Review BIZ-281")}
+	if r := e.do("PUT", "/api/sessions/own", body, ai); r.Code != 200 {
+		t.Fatalf("put: %d %s", r.Code, r.Body.String())
+	}
+	for _, r := range summaryRows(t, e, "?group=ticket", ai) {
+		if r.Coordinator {
+			t.Fatalf("coordinator row on a session that works on its own ticket: %+v", r)
+		}
+		if r.Key == "BIZ-282" && (!near(r.CostUSD, 8) || !near(r.CostByType["coordinator"], 4)) {
+			t.Fatalf("BIZ-282 = %+v", r)
+		}
+	}
+}
+
+// Concurrent re-pushes of one session (the hook and a --dir run) refresh the
+// same rows: they take their locks in one order, so neither deadlocks.
+func TestSessionAgentsConcurrentRepush(t *testing.T) {
+	e := newEnv(t, config.Config{})
+	owner, _ := e.user("")
+	w := e.workspace(owner)
+	ai := bearer(e.token(owner, w.ID))
+	if r := e.do("PUT", "/api/sessions/hub", hubSession(false), ai); r.Code != 200 {
+		t.Fatalf("put: %d %s", r.Code, r.Body.String())
+	}
+	errs := make(chan string, 8)
+	done := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		go func(i int) {
+			defer func() { done <- struct{}{} }()
+			if r := e.do("PUT", "/api/sessions/hub", hubSession(i%2 == 0), ai); r.Code != 200 {
+				errs <- r.Body.String()
+			}
+		}(i)
+	}
+	for i := 0; i < 8; i++ {
+		<-done
+	}
+	close(errs)
+	for msg := range errs {
+		t.Fatalf("concurrent re-push failed: %s", msg)
+	}
+	if r := summary(t, e, "?group=issue", ai)["BIZ-9"]; !near(r.CostUSD, 5) {
+		t.Fatalf("BIZ-9 = %+v", r)
+	}
+}

@@ -32,6 +32,25 @@ const (
 	SessionGroupTicket    = "ticket"     // ticket key × coordinator overhead, split by agent type
 )
 
+// IssuePrefixes returns the issue key prefixes of every workspace, the given
+// workspace's first. Run descriptions may only name keys with these prefixes.
+func (s *Store) IssuePrefixes(ctx context.Context, wsID string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT upper(key_prefix) FROM workspaces ORDER BY (id = $1) DESC, key_prefix`, wsID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // AgentTypeCoordinator is the agent type of a session's main transcript.
 const AgentTypeCoordinator = "coordinator"
 
@@ -119,6 +138,8 @@ func (s *Store) SaveSession(ctx context.Context, wsID string, in models.AgentSes
 		}
 	}
 
+	var msgIDs []string
+	var msgKeys, msgAgents []*string
 	if len(msgs) > 0 {
 		n := len(msgs)
 		ids, mdl := make([]string, n), make([]string, n)
@@ -144,35 +165,56 @@ func (s *Store) SaveSession(ctx context.Context, wsID string, in models.AgentSes
 			inTok[i], outTok[i], cr[i], w5[i], w1[i] = m.InputTokens, m.OutputTokens, m.CacheReadTokens, m.CacheWrite5mTokens, m.CacheWrite1hTokens
 			cost[i] = m.CostUSD
 		}
-		// m.issue_key is the branch key; a run whose description names a key overrides it.
+		msgIDs, msgKeys, msgAgents = ids, key, agent
+		// m.issue_key is the branch key ('' none); a run whose description names a key overrides it.
+		// A message another session (or this one) already holds is skipped here; its tokens, cost
+		// and owner never change.
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO ai_session_messages AS t (workspace_id, session_id, message_id, model, at, branch, issue_key, agent_id,
+			INSERT INTO ai_session_messages (workspace_id, session_id, message_id, model, at, branch, branch_key, issue_key, agent_id,
 				input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, cost_usd)
-			SELECT $1, $2, m.id, m.model, m.at, m.branch, coalesce(ag.issue_key, m.issue_key), m.agent,
+			SELECT $1, $2, m.id, m.model, m.at, m.branch, coalesce(m.issue_key, ''), coalesce(ag.issue_key, m.issue_key), m.agent,
 				m.i, m.o, m.cr, m.w5, m.w1, m.cost::numeric(14,6)
 			FROM unnest($3::text[], $4::text[], $5::timestamptz[], $6::bigint[], $7::bigint[], $8::bigint[], $9::bigint[],
 				$10::bigint[], $11::float8[], $12::text[], $13::text[], $14::text[])
 				AS m(id, model, at, i, o, cr, w5, w1, cost, branch, issue_key, agent)
 			LEFT JOIN ai_session_agents ag ON ag.workspace_id = $1 AND ag.agent_id = m.agent
 			ORDER BY m.id -- one lock order for every push, so concurrent pushes with shared ids cannot deadlock
-			ON CONFLICT (workspace_id, message_id) DO UPDATE SET
-				agent_id = coalesce(EXCLUDED.agent_id, t.agent_id),
-				issue_key = coalesce((SELECT r.issue_key FROM ai_session_agents r
-					WHERE r.workspace_id = t.workspace_id AND r.agent_id = coalesce(EXCLUDED.agent_id, t.agent_id)), EXCLUDED.issue_key)
-			WHERE t.session_id = EXCLUDED.session_id`,
+			ON CONFLICT (workspace_id, message_id) DO NOTHING`,
 			wsID, id, ids, mdl, at, inTok, outTok, cr, w5, w1, cost, branch, key, agent); err != nil {
 			return models.AgentSession{}, err
 		}
 	}
-	if len(agents) > 0 {
-		// Messages of a run saved by an earlier push follow the run's key.
+	// Lock this session's rows in message id order before refreshing them, so two pushes of
+	// one session wait for each other instead of deadlocking. Other sessions' rows are never
+	// updated.
+	if _, err := tx.Exec(ctx, `
+		SELECT 1 FROM ai_session_messages WHERE session_id = $1 ORDER BY message_id FOR UPDATE`, id); err != nil {
+		return models.AgentSession{}, err
+	}
+	if len(msgs) > 0 {
+		// Refresh who made the messages this push names and the key of their branch. An empty
+		// agent id (an older importer) keeps the stored one.
 		if _, err := tx.Exec(ctx, `
-			UPDATE ai_session_messages m SET issue_key = a.issue_key
-			FROM ai_session_agents a
-			WHERE m.session_id = $1 AND a.workspace_id = m.workspace_id AND a.agent_id = m.agent_id
-				AND a.issue_key IS NOT NULL AND m.issue_key IS DISTINCT FROM a.issue_key`, id); err != nil {
+			UPDATE ai_session_messages t SET agent_id = coalesce(p.agent, t.agent_id), branch_key = coalesce(p.issue_key, '')
+			FROM unnest($2::text[], $3::text[], $4::text[]) AS p(id, issue_key, agent)
+			WHERE t.session_id = $1 AND t.message_id = p.id
+				AND (t.agent_id IS DISTINCT FROM coalesce(p.agent, t.agent_id) OR t.branch_key IS DISTINCT FROM coalesce(p.issue_key, ''))`,
+			id, msgIDs, msgKeys, msgAgents); err != nil {
 			return models.AgentSession{}, err
 		}
+	}
+	// Every message of the session takes its run's key, else its branch key; a run that no
+	// longer names a key gives its messages their branch key back. A message saved before 0053
+	// and not pushed since (branch_key null) keeps its key.
+	if _, err := tx.Exec(ctx, `
+		UPDATE ai_session_messages t SET issue_key = k.key
+		FROM (SELECT m.message_id, coalesce(a.issue_key,
+				CASE WHEN m.branch_key IS NULL THEN m.issue_key ELSE nullif(m.branch_key, '') END) AS key
+			FROM ai_session_messages m
+			LEFT JOIN ai_session_agents a ON a.workspace_id = m.workspace_id AND a.agent_id = m.agent_id
+			WHERE m.session_id = $1) k
+		WHERE t.session_id = $1 AND t.message_id = k.message_id AND t.issue_key IS DISTINCT FROM k.key`, id); err != nil {
+		return models.AgentSession{}, err
 	}
 
 	if _, err := tx.Exec(ctx, `DELETE FROM ai_session_usage WHERE session_id=$1`, id); err != nil {
@@ -623,12 +665,17 @@ func (s *Store) summaryByAgent(ctx context.Context, wsID string, f SessionFilter
 
 // coordinatorExpr marks hub coordinator overhead: a message whose key comes
 // only from its branch (the coordinator's own, or a run whose description
-// names no key) in a session that runs agents for another ticket. Such a
-// session is a hub coordinator: its branch is where it sits, not what it
-// works on. A session opened on a ticket's own branch stays that ticket's work.
-const coordinatorExpr = `((m.agent_id IS NULL OR a.issue_key IS NULL) AND EXISTS (
-	SELECT 1 FROM ai_session_agents h
-	WHERE h.session_id = m.session_id AND h.issue_key IS NOT NULL AND h.issue_key <> coalesce(m.issue_key, '')))`
+// names no key) in a session that runs agents for another ticket and for
+// none on its branch's ticket. Such a session is a hub coordinator: its
+// branch is where it sits, not what it works on. A session that runs agents
+// for its own branch ticket (or none for other tickets) stays that ticket's
+// work. Limit: a hub that also runs one agent for its stale branch ticket
+// counts its coordinator work there.
+const coordinatorExpr = `((m.agent_id IS NULL OR a.issue_key IS NULL)
+	AND EXISTS (SELECT 1 FROM ai_session_agents h
+		WHERE h.session_id = m.session_id AND h.issue_key IS NOT NULL AND h.issue_key <> coalesce(m.issue_key, ''))
+	AND NOT EXISTS (SELECT 1 FROM ai_session_agents h2
+		WHERE h2.session_id = m.session_id AND h2.issue_key = m.issue_key))`
 
 // summaryByTicket: one row per ticket key, and one more per key that hub
 // coordinators sat on (Coordinator true). Each row is split by agent type.

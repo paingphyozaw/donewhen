@@ -47,8 +47,14 @@ func (s *Service) SaveSession(ctx context.Context, wsID string, in models.AgentS
 	if err := cleanAgents(agents); err != nil {
 		return models.AgentSession{}, err
 	}
-	for i := range agents {
-		agents[i].IssueKey = models.IssueKeyFromText(agents[i].Description)
+	if len(agents) > 0 {
+		prefixes, err := s.keyPrefixes(ctx, wsID, in, msgs)
+		if err != nil {
+			return models.AgentSession{}, err
+		}
+		for i := range agents {
+			agents[i].IssueKey = models.IssueKeyFromText(agents[i].Description, prefixes)
+		}
 	}
 	for i := range msgs {
 		msgs[i].CostUSD = models.MessageCost(msgs[i])
@@ -68,6 +74,27 @@ func (s *Service) SaveSession(ctx context.Context, wsID string, in models.AgentS
 		Session:     &saved,
 	})
 	return saved, nil
+}
+
+// keyPrefixes lists the issue prefixes a run description may name, best
+// first: the workspace's own, then the ones the session's branches name, then
+// every other workspace's. "UTF-8" or "ISO-8601" match none of them.
+func (s *Service) keyPrefixes(ctx context.Context, wsID string, in models.AgentSession, msgs []models.SessionMessage) ([]string, error) {
+	all, err := s.Store.IssuePrefixes(ctx, wsID)
+	if err != nil {
+		return nil, err
+	}
+	out := append([]string{}, all[:min(1, len(all))]...)
+	branches := []string{in.GitBranch}
+	for _, m := range msgs {
+		branches = append(branches, m.Branch)
+	}
+	for _, b := range branches {
+		for _, k := range models.IssueKeysFromBranch(b) {
+			out = append(out, k[:strings.LastIndex(k, "-")])
+		}
+	}
+	return append(out, all...), nil
 }
 
 // cleanAgents validates the runs of a push in place. Every error wraps store.ErrInvalid.
