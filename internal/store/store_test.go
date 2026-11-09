@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/johnreginald/donewhen/internal/testdb"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -690,5 +691,42 @@ func TestSaveProjectKeepsArchivedStatus(t *testing.T) {
 	}
 	if got.Status != "active" {
 		t.Fatalf("explicit status: got %q, want active", got.Status)
+	}
+}
+
+// Saves made at the same moment get distinct, gapless version numbers.
+func TestSaveHandoffConcurrent(t *testing.T) {
+	s := testStore(t)
+	ws := newWorkspace(t, s)
+	ini, err := s.SaveInitiative(context.Background(), ws, models.Initiative{Name: "POS"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 10
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := s.SaveHandoff(context.Background(), ws, ini.ID, "body", "s", "ai")
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("save: %v", err)
+		}
+	}
+	vs, err := s.ListHandoffVersions(context.Background(), ws, ini.ID)
+	if err != nil || len(vs) != n {
+		t.Fatalf("versions = %d (%v), want %d", len(vs), err, n)
+	}
+	for i, v := range vs { // newest first
+		if v.Version != n-i {
+			t.Fatalf("version at %d = %d, want %d", i, v.Version, n-i)
+		}
 	}
 }

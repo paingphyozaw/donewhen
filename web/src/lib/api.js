@@ -211,6 +211,11 @@ export const api = {
 	saveDocument: (b) => request('POST', '/documents', b),
 	deleteDocument: (id) => request('DELETE', `/documents/${id}`),
 
+	// handoff (BIZ-280): one note per project, saved as versions
+	handoff: (iniId, version) => request('GET', `/initiatives/${iniId}/handoff${version ? `?version=${version}` : ''}`),
+	handoffVersions: (iniId) => request('GET', `/initiatives/${iniId}/handoff/versions`),
+	saveHandoff: (iniId, body, summary) => request('PUT', `/initiatives/${iniId}/handoff`, { body, summary }),
+
 	// tokens
 	tokens: () => request('GET', '/tokens'),
 	createToken: (name, workspace) => request('POST', '/tokens', { name, workspace }),

@@ -223,6 +223,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/initiatives/{id}", s.wsGuard(s.handleGetInitiative))
 	mux.HandleFunc("PATCH /api/initiatives/{id}", s.wsGuard(s.handleUpdateInitiative))
 	mux.HandleFunc("DELETE /api/initiatives/{id}", s.wsGuard(s.handleDeleteInitiative))
+	mux.HandleFunc("GET /api/initiatives/{id}/handoff", s.wsGuard(s.handleGetHandoff))
+	mux.HandleFunc("GET /api/initiatives/{id}/handoff/versions", s.wsGuard(s.handleListHandoffVersions))
+	mux.HandleFunc("PUT /api/initiatives/{id}/handoff", s.wsGuard(s.handlePutHandoff))
 
 	// Projects.
 	mux.HandleFunc("GET /api/projects", s.wsGuard(s.handleListProjects))

@@ -10,6 +10,7 @@
 //	donewhen workspace ...         list/create workspaces and grant access
 //	donewhen demo [--workspace s]  seed a sample "Demo" workspace
 //	donewhen genvapid              print a fresh VAPID keypair
+//	donewhen handoff import ...    save a Markdown file as a project's next handoff version
 package main
 
 import (
@@ -62,6 +63,8 @@ func main() {
 		runWorkspace(os.Args[2:])
 	case "demo":
 		runDemo(os.Args[2:])
+	case "handoff":
+		runHandoff(os.Args[2:])
 	case "genvapid":
 		runGenVAPID()
 	case "help", "-h", "--help":
@@ -84,6 +87,7 @@ usage:
   donewhen token <name> [ws]     create an API token; pass a workspace slug to pin it
   donewhen user <email> <pass>   create the initial user
   donewhen genvapid              print a fresh VAPID keypair
+  donewhen handoff import --initiative <name|id> --file <path>   save a Markdown file as the next handoff version (needs DONEWHEN_URL + a token)
 
   donewhen demo [--workspace <slug>]           seed a sample workspace (needs a user; safe to repeat)
 
