@@ -43,7 +43,10 @@ func runHandoff(args []string) {
 	}
 	path := *file
 	if strings.HasPrefix(path, "~/") {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatalf("cannot expand ~ in --file: %v", err)
+		}
 		path = filepath.Join(home, path[2:])
 	}
 	body, err := os.ReadFile(path)

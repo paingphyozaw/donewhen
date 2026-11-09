@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -238,6 +239,9 @@ func (d *deps) registerContent(s *server.MCPServer) {
 		h, err := d.store.GetHandoff(ctx, wsID, ini.ID, version)
 		if errors.Is(err, store.ErrNotFound) && version == 0 {
 			return jsonResult(map[string]any{"handoff": nil, "hint": "No handoff yet. Use save_handoff."})
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			return mcp.NewToolResultError(fmt.Sprintf("handoff version %d not found for %s", version, ini.Name)), nil
 		}
 		if err != nil {
 			return toolErr(err), nil

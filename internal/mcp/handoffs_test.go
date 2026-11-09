@@ -52,3 +52,45 @@ func TestHandoffTools(t *testing.T) {
 		t.Fatalf("cross-workspace save = %q", out)
 	}
 }
+
+// A name in another workspace is not found by a pinned token; with all
+// workspaces in reach, a name shared by two workspaces is refused.
+func TestHandoffToolsNameScope(t *testing.T) {
+	e := newEnv(t)
+	uid := e.user()
+	a := e.workspace(uid)
+	b := e.workspace(uid)
+	only := "Only-" + uniq()
+	shared := "Shared-" + uniq()
+	for _, w := range []models.Workspace{a, b} {
+		if _, err := e.store.SaveInitiative(context.Background(), w.ID, models.Initiative{Name: shared}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := e.store.SaveInitiative(context.Background(), b.ID, models.Initiative{Name: only}); err != nil {
+		t.Fatal(err)
+	}
+
+	pinned := e.ctxFor(uid, a.ID)
+	for _, tool := range []string{"get_handoff", "save_handoff"} {
+		out, isErr := e.call(pinned, tool, map[string]any{"initiative": only, "body": "x", "summary": "y"})
+		if !isErr || !strings.Contains(out, "not found") {
+			t.Fatalf("%s by name in another workspace = %q (err %v)", tool, out, isErr)
+		}
+	}
+
+	all := e.ctxFor(uid, "")
+	for _, tool := range []string{"get_handoff", "save_handoff"} {
+		out, isErr := e.call(all, tool, map[string]any{"initiative": shared, "body": "x", "summary": "y"})
+		if !isErr || !strings.Contains(out, "matches 2 projects") {
+			t.Fatalf("%s with a shared name = %q (err %v)", tool, out, isErr)
+		}
+	}
+	// Naming the workspace resolves it.
+	if out, isErr := e.call(all, "save_handoff", map[string]any{"initiative": shared, "body": "x", "summary": "y", "workspace": a.ID}); isErr {
+		t.Fatalf("save with workspace = %q", out)
+	}
+	if out, isErr := e.call(all, "get_handoff", map[string]any{"initiative": shared, "version": 5, "workspace": a.ID}); !isErr || !strings.Contains(out, "version 5 not found") {
+		t.Fatalf("missing version = %q (err %v)", out, isErr)
+	}
+}
