@@ -75,7 +75,11 @@ Drive the states yourself as the work moves: Triage when captured, Aligning whil
 
 Each project (initiative) has one handoff note in DoneWhen, with history. It replaces a local `HANDOFF.md`.
 
-- **Session start:** call `get_handoff` for the project you work in, and read it before anything else. `null` with the hint "No handoff yet" means there is none: ask before inventing one.
-- **Session end:** call `save_handoff` with the **full updated text**, not a diff. The new version becomes the handoff and the old one stays in the history. Keep what is still true, remove what is done, add what the next session needs.
+- **Session start:** call `get_handoff` for the project you work in, and read it before anything else. `null` with the hint "No handoff yet" means there is none: start from the `template` it returns, and ask before inventing content. If the handoff and the ticket states differ, **trust the ticket states**.
+- **Session end, or before the context runs out:** call `save_handoff` with the **full new text** in the template, plus a one-line `summary`. The new version replaces the handoff; the old one stays in the history. Replace, never append: keep what is still true, remove what is done.
+- **Who saves:** only the coordinator. Builders and reviewers write progress in ticket comments, never in the handoff.
+- **Format** (`get_handoff` returns it as `rules` and `template`): six headings in this order: `## Now`, `## In flight`, `## Next steps`, `## Waiting on owner`, `## Rules and gotchas`, `## Where things are`. At most 150 lines and 12,000 characters. No dated "Update 17:45" logs.
+- A save with a heading missing is refused with `handoff_sections_missing` (it lists them). Too long is refused with `handoff_too_long`. If In flight names a Done or Canceled ticket, the save works and returns `done_tickets`: remove those from the next save.
+- Old free-form handoffs still open. `donewhen handoff import --legacy` loads an old file without the checks.
 - `summary` is one line (at most 200 characters) that says what changed in this version.
 - The owner reads and edits it in the web app under **Handoff**.

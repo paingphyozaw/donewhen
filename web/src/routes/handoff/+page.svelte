@@ -247,7 +247,7 @@
 						<button class="btn primary" disabled={saving || !!blocker} title={blocker} onclick={save}>{saving ? 'Saving…' : 'Save'}</button>
 						<button class="btn ghost" disabled={saving} onclick={() => (editing = false)}>Cancel</button>
 					</div>
-					{#if blocker}<p class="saveerr">{blocker}</p>{:else if saveError}<p class="saveerr">{saveError}</p>{/if}
+					{#if blocker && !dMissing.length}<p class="saveerr">{blocker}</p>{:else if saveError && !blocker}<p class="saveerr">{saveError}</p>{/if}
 				</div>
 				{@render side(false)}
 				</div>
