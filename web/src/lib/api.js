@@ -181,7 +181,6 @@ export const api = {
 	// sessions — Claude Code token usage (read side; the CLI writes them)
 	sessions: (q = '') => request('GET', '/sessions' + q),
 	sessionSummary: (q = '') => request('GET', '/sessions/summary' + q),
-
 	issueActivity: (id) => request('GET', `/issues/${id}/activity`),
 	activity: (q = {}) => {
 		const p = new URLSearchParams(Object.entries(q).filter(([, v]) => v));

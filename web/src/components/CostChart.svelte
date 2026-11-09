@@ -51,7 +51,7 @@
 						class="bar"
 						class:on={hover === i}
 						d={barPath(M.left + band * i + (band - barW) / 2, yOf(d.costUsd), barW, Math.max(1, h))}
-					/>
+					><title>{dayLong(d.key)}: {fmtCost(d.costUsd)}, {fmtInt(d.tokens)} tokens, {fmtInt(d.sessions)} sessions</title></path>
 				{/if}
 				{#if i % every === 0}
 					<text class="xlab" x={M.left + band * (i + 0.5)} y={HEIGHT - 8} text-anchor="middle">{dayShort(d.key)}</text>

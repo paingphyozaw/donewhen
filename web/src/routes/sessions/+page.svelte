@@ -235,9 +235,9 @@
 				<section class="block" class:dim={loading}>
 					<div class="bhrow">
 						<h2 class="bh">Breakdown</h2>
-						<div class="seg" role="tablist">
+						<div class="seg">
 							{#each TABS as t (t.key)}
-								<button class="sg" role="tab" aria-selected={tab === t.key} class:on={tab === t.key} onclick={() => (tab = t.key)}>{t.label}</button>
+								<button class="sg" aria-pressed={tab === t.key} class:on={tab === t.key} onclick={() => (tab = t.key)}>{t.label}</button>
 							{/each}
 						</div>
 					</div>
@@ -311,7 +311,7 @@
 								<span role="cell" class="num">{fmtInt(s.tokens)}</span>
 								<span role="cell" class="num">{fmtCost(s.costUsd)}</span>
 								{#if open.has(s.id)}
-									<div class="usage" role="presentation">
+									<div class="usage" role="cell">
 										<div class="ur uh">
 											<span>Model</span><span class="num">Input</span><span class="num">Output</span><span class="num">Cache read</span><span class="num">Cache write</span><span class="num">Cost</span>
 										</div>
