@@ -26,6 +26,7 @@ The hard rules (confirm before creating, the checklist gates In Review and Done,
 | Create / update / move | `save_issue` (no id = create; `state` = a status name; `blockedBy` = keys it waits on) |
 | Epics and initiatives | `list_projects`, `get_project`, `save_project`, `list_initiatives`, `save_initiative` |
 | Comments and decisions | `list_comments`, `save_comment` (`kind: "decision"` for a choice made on the ticket; `get_issue` returns them) |
+| Session handoff | `get_handoff` (initiative name or id; latest, or `version`), `save_handoff` (`initiative`, `body`, `summary`) |
 | What to take next | `next_issues` (the critical path first) |
 | Labels and states | `list_issue_labels`, `create_issue_label`, `list_issue_statuses` |
 | Done-when | `get_criteria`, `set_criteria`, `check_criterion` |
@@ -69,3 +70,12 @@ Read [TICKETS.md](TICKETS.md) before writing or rewriting any ticket, and follow
 ## Moving tickets as work happens
 
 Drive the states yourself as the work moves: Triage when captured, Aligning while discussing, Ready when the spec is locked, In Progress while building, Blocked (with a comment saying why) when it cannot finish without the user, In Review at the PR, Done at merge.
+
+## Session handoff
+
+Each project (initiative) has one handoff note in DoneWhen, with history. It replaces a local `HANDOFF.md`.
+
+- **Session start:** call `get_handoff` for the project you work in, and read it before anything else. `null` with the hint "No handoff yet" means there is none: ask before inventing one.
+- **Session end:** call `save_handoff` with the **full updated text**, not a diff. The new version becomes the handoff and the old one stays in the history. Keep what is still true, remove what is done, add what the next session needs.
+- `summary` is one line (at most 200 characters) that says what changed in this version.
+- The owner reads and edits it in the web app under **Handoff**.
