@@ -217,6 +217,7 @@ export const api = {
 	// handoff (BIZ-280): one note per project, saved as versions
 	handoff: (iniId, version) => request('GET', `/initiatives/${iniId}/handoff${version ? `?version=${version}` : ''}`),
 	handoffVersions: (iniId) => request('GET', `/initiatives/${iniId}/handoff/versions`),
+	handoffFormat: () => request('GET', '/handoff/format'),
 	saveHandoff: (iniId, body, summary) => request('PUT', `/initiatives/${iniId}/handoff`, { body, summary }),
 
 	// tokens

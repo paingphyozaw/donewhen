@@ -28,7 +28,8 @@ func (s *Server) handleGetHandoff(w http.ResponseWriter, r *http.Request) {
 	if handleStoreErr(w, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, h)
+	// done_tickets is live: the tickets In flight that are Done or Canceled now.
+	writeJSON(w, http.StatusOK, service.HandoffSaved{Handoff: h, DoneTickets: s.svc.HandoffDoneTickets(r.Context(), ws(r), h.BodyMD)})
 }
 
 func (s *Server) handleListHandoffVersions(w http.ResponseWriter, r *http.Request) {
