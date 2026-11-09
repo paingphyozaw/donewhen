@@ -10,6 +10,7 @@
 //	donewhen workspace ...         list/create workspaces and grant access
 //	donewhen demo [--workspace s]  seed a sample "Demo" workspace
 //	donewhen genvapid              print a fresh VAPID keypair
+//	donewhen sessions push ...     send Claude Code session token usage to a server
 package main
 
 import (
@@ -64,6 +65,8 @@ func main() {
 		runDemo(os.Args[2:])
 	case "genvapid":
 		runGenVAPID()
+	case "sessions":
+		os.Exit(runSessions(os.Args[2:], config.Getenv, os.Stdout, os.Stderr))
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -84,6 +87,10 @@ usage:
   donewhen token <name> [ws]     create an API token; pass a workspace slug to pin it
   donewhen user <email> <pass>   create the initial user
   donewhen genvapid              print a fresh VAPID keypair
+
+  donewhen sessions push --file <transcript.jsonl>          send one Claude Code session's token usage
+  donewhen sessions push --dir <dir> [--since YYYY-MM-DD]   send every session under a folder
+                                 (env DONEWHEN_URL, DONEWHEN_TOKEN, DONEWHEN_WORKSPACE; see docs/SESSIONS.md)
 
   donewhen demo [--workspace <slug>]           seed a sample workspace (needs a user; safe to repeat)
 
