@@ -20,6 +20,8 @@
 	--ink: oklch(0.25 0.01 70); /* primary text */
 	--ink-2: oklch(0.46 0.01 70); /* secondary text */
 	--ink-3: oklch(0.53 0.008 70); /* meta, placeholders */
+	--select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%236f6b67' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); /* ink-3 */
+	--select-chevron-strong: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%2325211d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); /* ink */
 
 	/* accent — ink blue, used sparingly */
 	--accent: oklch(0.5 0.1 255);
@@ -90,6 +92,8 @@
 	--ink: oklch(0.93 0.006 85);
 	--ink-2: oklch(0.74 0.008 85);
 	--ink-3: oklch(0.625 0.008 85);
+	--select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%238a8782' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+	--select-chevron-strong: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23eae8e3' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 	--accent: oklch(0.72 0.1 255);
 	--accent-ink: oklch(0.2 0.006 70);
 	--accent-soft: oklch(0.32 0.04 255);
@@ -116,6 +120,8 @@
 		--ink: oklch(0.93 0.006 85);
 		--ink-2: oklch(0.74 0.008 85);
 		--ink-3: oklch(0.625 0.008 85);
+		--select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%238a8782' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+		--select-chevron-strong: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23eae8e3' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 		--accent: oklch(0.72 0.1 255);
 		--accent-ink: oklch(0.2 0.006 70);
 		--accent-soft: oklch(0.32 0.04 255);
@@ -387,6 +393,33 @@ select {
 	border-color: var(--accent);
 	box-shadow: 0 0 0 3px var(--focus);
 	outline: none;
+}
+/* One select for the whole app: the native arrow is hidden and a themed
+   chevron sits centred, 10px from the right edge (BIZ-281). */
+select,
+.select {
+	-webkit-appearance: none;
+	-moz-appearance: none;
+	appearance: none;
+	background-image: var(--select-chevron);
+	background-repeat: no-repeat;
+	background-position: right 10px center;
+	background-size: 12px 12px;
+	border-radius: var(--r-sm);
+	padding-right: 30px;
+	text-overflow: ellipsis;
+	cursor: pointer;
+}
+select:not(:disabled):hover,
+select:not(:disabled):focus,
+.select:not(:disabled):hover,
+.select:not(:disabled):focus {
+	background-image: var(--select-chevron-strong);
+}
+select[multiple],
+select[size]:not([size='1']) {
+	background-image: none;
+	padding-right: 10px;
 }
 .input:disabled,
 .textarea:disabled,
