@@ -50,20 +50,23 @@ A message's ticket key:
 
 | Message from | Key |
 |---|---|
-| a run whose `description` names a key (`BIZ-278`, upper case) | that key |
+| a run whose `description` names a key (`BIZ-278`, upper case, with a real issue prefix) | that key |
 | a run with no key in its description | the key of the message's branch |
 | the coordinator | the key of the message's branch |
 
+- A key counts only when its prefix is a real issue prefix: the workspace's own (preferred), one a branch of the session names, or another workspace's. So "Fix UTF-8 bug for BIZ-12" gives `BIZ-12`, and "ISO-8601" gives none.
+- Each message also keeps its branch key (`branch_key`). Its `issue_key` is its run's key, else that branch key.
 - Runs are stored in `ai_session_agents` (one row per run, unique per workspace; migration `0053_session_agents.sql`). A run belongs to the session that first sent it.
-- **Re-push refreshes:** pushing a session again sets `agent_id` and `issue_key` on the messages that session already holds. Tokens, cost and which session owns a message never change. A push from an older importer (no `agentId`) keeps the stored agent. To fix data saved before BIZ-282, run `donewhen sessions push --dir …` again.
+- **Re-push refreshes:** pushing a session again sets `agent_id` and `issue_key` on the messages that session already holds. A run that no longer names a key gives its messages their branch key back, so a wrong key is cleaned by a re-push. The refresh locks the session's rows in message id order, so two pushes of one session wait for each other. Tokens, cost and which session owns a message never change. A push from an older importer (no `agentId`) keeps the stored agent. To fix data saved before BIZ-282, run `donewhen sessions push --dir …` again.
 
 ### Coordinator overhead
 
 A hub coordinator sits on one branch (say `feature/biz-102-app-list`) for days while its runs build other tickets. Its own messages would all count for BIZ-102. So the `ticket` summary keeps them apart:
 
-- A message is **coordinator overhead** when its key comes only from its branch (the coordinator's own message, or a run with no key in its description) **and** its session runs agents for another ticket.
+- A message is **coordinator overhead** when its key comes only from its branch (the coordinator's own message, or a run with no key in its description), its session runs agents for another ticket, **and** no run of the session names the branch's ticket.
 - Those messages form a separate row with `coordinator: true` and the branch key (the UI shows "Coordinator (branch BIZ-102)").
-- A session opened on a ticket's own branch with no runs for other tickets stays that ticket's work.
+- A session opened on a ticket's own branch stays that ticket's work: it has no runs for other tickets, or it runs agents for its own ticket too (on `feature/biz-282-…`, runs for BIZ-282 and BIZ-281 → the coordinator's work stays on BIZ-282).
+- Limit: a hub on a stale branch that once runs an agent for that branch's ticket counts all its coordinator work there. Move the hub to a branch without a ticket key (or `main`) to avoid it.
 - The `issue` group does not split them: it keys every message by its key, as before.
 
 ## Cost

@@ -67,7 +67,7 @@
 		<div class="grid" role="table" aria-label="Cost per ticket">
 			<div class="gr gh tk" role="row">
 				<span role="columnheader">Ticket</span>
-				<span role="columnheader" class="num" title="Runs: builder / reviewer / tester">Runs</span>
+				<span role="columnheader" class="num" title="Runs: build / review / test">Runs</span>
 				<span role="columnheader" class="num">Build</span>
 				<span role="columnheader" class="num">Review</span>
 				<span role="columnheader" class="num">Other</span>
@@ -97,7 +97,7 @@
 							<span class="faint">{r.label}</span>
 						{/if}
 					</span>
-					<span role="cell" class="num faint">{runsText(r)}</span>
+					<span role="cell" class="num faint" title="{r.runs.build} build, {r.runs.review} review, {r.runs.test} test runs">{runsText(r)}</span>
 					<span role="cell" class="num">{fmtCost(r.build)}</span>
 					<span role="cell" class="num">{fmtCost(r.review)}</span>
 					<span role="cell" class="num">{fmtCost(r.other)}</span>

@@ -1,7 +1,9 @@
 // Ticket titles and states for the Sessions views (BIZ-282). The workspace's
 // issues are already in the store; a key it does not hold (an archived or
 // older ticket) is fetched once from the issues API. A key that is not found
-// (another workspace's ticket) simply has no title.
+// (another workspace's ticket) simply has no title. The issues API cannot
+// filter by several keys (only state, epic, label, parent and a text query),
+// so a missing key is fetched by itself, at most MAX_FETCH per call.
 import { get } from 'svelte/store';
 import { allIssues, states } from '$lib/store.js';
 import { api } from '$lib/api.js';

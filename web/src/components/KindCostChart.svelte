@@ -65,6 +65,14 @@
 		<span class="lg"><span class="sw" style:background={k.color}></span>{k.label}</span>
 	{/each}
 </div>
+<!-- The same numbers for keyboard and screen-reader users: one line per day. -->
+<ul class="sr">
+	{#each days.filter((d) => d.costUsd > 0) as d (d.key)}
+		<li>
+			{dayLong(d.key)}: {#each KINDS as k (k.key)}{k.label} {fmtCost(costOf(d, k.key))}, {/each}total {fmtCost(d.costUsd)}, {fmtInt(d.tokens)} tokens.
+		</li>
+	{/each}
+</ul>
 <div class="chart" bind:clientWidth={width}>
 	{#if width > 0 && days.length}
 		<svg {width} height={HEIGHT} role="img" aria-label="Cost per day by token kind, {days.length} days" onmouseleave={() => (hover = -1)}>
@@ -113,6 +121,17 @@
 </div>
 
 <style>
+	.sr {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0 0 0 0);
+		white-space: nowrap;
+		border: 0;
+	}
 	.legend {
 		display: flex;
 		flex-wrap: wrap;
