@@ -43,6 +43,12 @@
 	--danger-soft: oklch(0.95 0.03 25);
 	--ok-soft: oklch(0.95 0.03 150);
 
+	/* chart series (BIZ-282): a validated categorical order, used in this order */
+	--viz-1: #2a78d6;
+	--viz-2: #eb6834;
+	--viz-3: #1baf7a;
+	--viz-4: #eda100;
+
 	/* type */
 	--font: 'IBM Plex Sans', -apple-system, 'Segoe UI', system-ui, sans-serif;
 	--mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
@@ -97,6 +103,10 @@
 	--danger: oklch(0.7 0.15 25);
 	--danger-soft: oklch(0.3 0.05 25);
 	--ok-soft: oklch(0.3 0.04 150);
+	--viz-1: #3987e5;
+	--viz-2: #d95926;
+	--viz-3: #199e70;
+	--viz-4: #c98500;
 	--shadow-1: none;
 	--shadow-2: 0 12px 36px oklch(0 0 0 / 0.45);
 	/* Re-resolve inherited colours at the element that flips the theme: a
@@ -123,6 +133,10 @@
 		--danger: oklch(0.7 0.15 25);
 		--danger-soft: oklch(0.3 0.05 25);
 		--ok-soft: oklch(0.3 0.04 150);
+		--viz-1: #3987e5;
+		--viz-2: #d95926;
+		--viz-3: #199e70;
+		--viz-4: #c98500;
 		--shadow-1: none;
 		--shadow-2: 0 12px 36px oklch(0 0 0 / 0.45);
 	}
