@@ -41,23 +41,25 @@ func (s *Service) SaveHandoff(ctx context.Context, wsID, initiativeID, body, sum
 // are Done or Canceled, looked up in the same workspace. Unknown keys are
 // ignored. Never nil, so it serialises as [].
 func (s *Service) HandoffDoneTickets(ctx context.Context, wsID, body string) []string {
+	keys := HandoffInFlightKeys(body)
+	if len(keys) > handoffMaxLookup {
+		keys = keys[:handoffMaxLookup]
+	}
 	out := []string{}
-	cats := map[string]string{}
-	for _, key := range HandoffInFlightKeys(body) {
-		is, err := s.Store.GetIssueByKey(ctx, wsID, key)
-		if err != nil {
-			continue
-		}
-		cat, ok := cats[is.StateID]
-		if !ok {
-			if st, err := s.Store.GetState(ctx, wsID, is.StateID); err == nil {
-				cat = st.Category
-			}
-			cats[is.StateID] = cat
-		}
-		if cat == "completed" || cat == "canceled" {
-			out = append(out, is.Key)
+	if len(keys) == 0 {
+		return out
+	}
+	cats, err := s.Store.IssueCategoriesByKeys(ctx, wsID, keys)
+	if err != nil {
+		return out
+	}
+	for _, k := range keys { // keep the order they appear in
+		if c := cats[k]; c == "completed" || c == "canceled" {
+			out = append(out, k)
 		}
 	}
 	return out
 }
+
+// handoffMaxLookup caps how many distinct keys one save looks up.
+const handoffMaxLookup = 100

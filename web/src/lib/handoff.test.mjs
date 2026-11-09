@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { countLines, countChars, missingSections, saveBlocker, daysSince, outline } from './handoff.js';
+import { countLines, countChars, missingSections, saveBlocker, sectionProblem, daysSince, outline } from './handoff.js';
 
 const sections = ['## Now', '## In flight', '## Next steps', '## Waiting on owner', '## Rules and gotchas', '## Where things are'];
 const fmt = { sections, maxLines: 150, maxChars: 12000 };
@@ -40,4 +40,20 @@ test('outline gives each section with its offset', () => {
 		{ title: 'Now', line: 0, offset: 0 },
 		{ title: 'In flight', line: 2, offset: 9 }
 	]);
+});
+
+test('headings inside code fences do not count', () => {
+	const fenced = tmpl.replace('## Now\n', '```\n## Now\n```\n').replace('## Now\n\n', '');
+	assert.deepEqual(missingSections('```\n## Now\n```\n', sections).includes('## Now'), true);
+	assert.equal(outline('~~~\n## Fake\n~~~\n## Real\n').length, 1);
+	assert.equal(outline('~~~\n## Fake\n~~~\n## Real\n')[0].title, 'Real');
+	assert.ok(fenced);
+});
+
+test('repeated and out-of-order headings are reported', () => {
+	assert.equal(sectionProblem(tmpl, sections), '');
+	assert.match(sectionProblem(tmpl + '\n## Now\n', sections), /^Repeated: ## Now/);
+	const swapped = ['## In flight', '## Now', ...sections.slice(2)].join('\n\n');
+	assert.match(sectionProblem(swapped, sections), /^Out of order/);
+	assert.match(saveBlocker(swapped, fmt), /^Out of order/);
 });

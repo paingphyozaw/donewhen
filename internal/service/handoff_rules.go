@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -32,7 +33,7 @@ var HandoffSections = []string{
 }
 
 // HandoffRules is the format in short text, for agents and the Rules panel.
-const HandoffRules = `Use these six headings, in this order:
+const HandoffRules = `Use these six headings, in this order, each once (headings inside code fences do not count):
 ## Now - the date and 2-4 sentences on where the work stands (6 lines).
 ## In flight - a table: Ticket | State | PR | Next action | Who. One row per open ticket.
 ## Next steps - numbered, in order (10 items).
@@ -81,37 +82,72 @@ func (e *HandoffFormatError) Unwrap() error { return store.ErrInvalid }
 
 func normHeading(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
-// handoffSectionBodies maps each "## " heading (normalised) to the text under
-// it, up to the next "## " heading.
-func handoffSectionBodies(body string) map[string]string {
-	out := map[string]string{}
+// fenceMarker returns the fence character (` or ~) when line opens or closes a
+// code fence, else 0.
+func fenceMarker(line string) byte {
+	t := strings.TrimLeft(line, " ")
+	if strings.HasPrefix(t, "```") {
+		return '`'
+	}
+	if strings.HasPrefix(t, "~~~") {
+		return '~'
+	}
+	return 0
+}
+
+// handoffParse walks the body once, skipping lines inside code fences when it
+// looks for "## " headings. It returns the headings in order (normalised) and
+// the text under each, up to the next heading.
+func handoffParse(body string) ([]string, map[string]string) {
+	var heads []string
+	bodies := map[string]string{}
 	cur := ""
 	var buf []string
 	flush := func() {
 		if cur != "" {
-			out[cur] += strings.Join(buf, "\n")
+			bodies[cur] += strings.Join(buf, "\n")
 		}
 		buf = nil
 	}
+	var fence byte
 	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(line, "## ") {
+		if m := fenceMarker(line); m != 0 && (fence == 0 || fence == m) {
+			if fence == 0 {
+				fence = m
+			} else {
+				fence = 0
+			}
+		} else if fence == 0 && strings.HasPrefix(line, "## ") {
 			flush()
 			cur = normHeading(line)
+			heads = append(heads, cur)
 			continue
 		}
 		buf = append(buf, line)
 	}
 	flush()
-	return out
+	return heads, bodies
+}
+
+func handoffSectionBodies(body string) map[string]string {
+	_, b := handoffParse(body)
+	return b
 }
 
 // CheckHandoffFormat applies the structure rules to a new save.
 func CheckHandoffFormat(body string) error {
-	have := handoffSectionBodies(body)
-	var missing []string
+	heads, _ := handoffParse(body)
+	count := map[string]int{}
+	for _, h := range heads {
+		count[h]++
+	}
+	var missing, dup []string
 	for _, h := range HandoffSections {
-		if _, ok := have[normHeading(h)]; !ok {
+		switch n := count[normHeading(h)]; {
+		case n == 0:
 			missing = append(missing, h)
+		case n > 1:
+			dup = append(dup, h)
 		}
 	}
 	if len(missing) > 0 {
@@ -119,6 +155,28 @@ func CheckHandoffFormat(body string) error {
 			Code:    "handoff_sections_missing",
 			Message: "missing sections: " + strings.Join(missing, ", ") + ". Use the template from get_handoff.",
 			Missing: missing,
+		}
+	}
+	if len(dup) > 0 {
+		return &HandoffFormatError{
+			Code:    "handoff_sections_duplicate",
+			Message: "each section may appear once; repeated: " + strings.Join(dup, ", "),
+			Missing: dup,
+		}
+	}
+	var seen []string
+	for _, h := range heads {
+		if count[h] == 1 && slices.ContainsFunc(HandoffSections, func(r string) bool { return normHeading(r) == h }) {
+			seen = append(seen, h)
+		}
+	}
+	for i, h := range HandoffSections {
+		if seen[i] != normHeading(h) {
+			return &HandoffFormatError{
+				Code:    "handoff_sections_order",
+				Message: "sections are out of order; the order is: " + strings.Join(HandoffSections, ", "),
+				Missing: HandoffSections,
+			}
 		}
 	}
 	lines := strings.Count(strings.TrimRight(body, "\n"), "\n") + 1

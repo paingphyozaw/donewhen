@@ -165,3 +165,28 @@ func (s *Store) FindInitiative(ctx context.Context, wsIDs []string, ref string) 
 	}
 	return "", models.Initiative{}, invalid("%q matches %d projects; use the id or pass workspace", ref, len(hits))
 }
+
+// IssueCategoriesByKeys maps each upper-case issue key found in the workspace
+// to the category of its state (completed, canceled, ...), in one query.
+// Keys that do not exist are left out.
+func (s *Store) IssueCategoriesByKeys(ctx context.Context, wsID string, keys []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(keys) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT upper(i.key), st.category FROM issues i
+		JOIN workflow_states st ON st.id = i.state_id
+		WHERE i.workspace_id=$1 AND upper(i.key) = ANY($2)`, wsID, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k, c string
+		if err := rows.Scan(&k, &c); err != nil {
+			return nil, err
+		}
+		out[k] = c
+	}
+	return out, rows.Err()
+}

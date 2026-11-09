@@ -156,6 +156,26 @@ func TestHandoffStructure(t *testing.T) {
 		t.Fatalf("done tickets = %d %v", c, m)
 	}
 
+	// A browser session may not send legacy.
+	ck := e.session(uid)
+	wl := e.do("PUT", base, map[string]any{"body": "old format", "summary": "s", "legacy": true}, browser(ck), header("X-Workspace", a.ID))
+	if wl.Code != 400 || !strings.Contains(wl.Body.String(), "legacy is for the import command") {
+		t.Fatalf("session legacy = %d %s", wl.Code, wl.Body.String())
+	}
+	// Fenced headings do not count; order and repeats are refused.
+	fenced := strings.Replace(tmpl, "## Now\n", "```\n## Now\n```\n", 1)
+	if c, m := put(map[string]any{"body": fenced, "summary": "s"}); c != 400 || m["code"] != "handoff_sections_missing" {
+		t.Fatalf("fenced = %d %v", c, m)
+	}
+	if c, m := put(map[string]any{"body": tmpl + "\n## Now\n", "summary": "s"}); c != 400 || m["code"] != "handoff_sections_duplicate" {
+		t.Fatalf("duplicate = %d %v", c, m)
+	}
+	swapped := strings.Replace(strings.Replace(tmpl, "## Now", "## @@", 1), "## In flight", "## Now", 1)
+	swapped = strings.Replace(swapped, "## @@", "## In flight", 1)
+	if c, m := put(map[string]any{"body": swapped, "summary": "s"}); c != 400 || m["code"] != "handoff_sections_order" {
+		t.Fatalf("order = %d %v", c, m)
+	}
+
 	// Legacy (import) skips the structure checks; old versions stay readable.
 	if c, m := put(map[string]any{"body": "old format", "summary": "s", "legacy": true}); c != 200 || m["version"] != float64(2+1) {
 		t.Fatalf("legacy = %d %v", c, m)

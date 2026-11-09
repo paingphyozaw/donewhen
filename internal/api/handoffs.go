@@ -51,7 +51,12 @@ func (s *Server) handlePutHandoff(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	h, err := s.svc.SaveHandoff(r.Context(), ws(r), r.PathValue("id"), req.Body, req.Summary, auth.ActorFrom(r.Context()), req.Legacy)
+	actor := auth.ActorFrom(r.Context())
+	if req.Legacy && actor != "ai" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "legacy is for the import command", "code": "invalid_handoff"})
+		return
+	}
+	h, err := s.svc.SaveHandoff(r.Context(), ws(r), r.PathValue("id"), req.Body, req.Summary, actor, req.Legacy)
 	var fe *service.HandoffFormatError
 	if errors.As(err, &fe) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
