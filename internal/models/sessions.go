@@ -21,6 +21,50 @@ type AgentSession struct {
 	Usage       []SessionUsage `json:"usage"`
 	Tokens      int64          `json:"tokens"` // sum of all four counts over all models
 	CostUSD     float64        `json:"costUsd"`
+	Kinds       []KindCost     `json:"kinds"`  // cost split by token kind (BIZ-282)
+	Agents      []SessionRun   `json:"agents"` // the session's subagent runs (BIZ-282)
+}
+
+// SessionAgent is one subagent run as the importer reads it from the run's
+// agent-<id>.meta.json. Description is the short task title the coordinator
+// gave the run; it is the only free text DoneWhen stores. IssueKey is set by
+// the server: the ticket key the description names, if any.
+type SessionAgent struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Description string `json:"description"`
+	Model       string `json:"model"`
+	IssueKey    string `json:"issueKey,omitempty"`
+}
+
+// SessionRun is a subagent run with the usage of its messages in the session.
+type SessionRun struct {
+	ID          string  `json:"id"`
+	Type        string  `json:"type"`
+	Description string  `json:"description"`
+	Issue       string  `json:"issue"`
+	Model       string  `json:"model"`
+	Messages    int     `json:"messages"`
+	Tokens      int64   `json:"tokens"`
+	CostUSD     float64 `json:"costUsd"`
+}
+
+// Token kinds of the cost split, in their fixed order.
+const (
+	KindInput      = "input"
+	KindOutput     = "output"
+	KindCacheRead  = "cache_read"
+	KindCacheWrite = "cache_write"
+)
+
+// TokenKinds is the fixed order of the kinds.
+var TokenKinds = []string{KindInput, KindOutput, KindCacheRead, KindCacheWrite}
+
+// KindCost is the tokens and cost of one token kind.
+type KindCost struct {
+	Kind    string  `json:"kind"`
+	Tokens  int64   `json:"tokens"`
+	CostUSD float64 `json:"costUsd"`
 }
 
 // SessionUsage is one model's token sums within a session.
@@ -52,6 +96,7 @@ type SessionMessage struct {
 	CacheWrite5mTokens int64     `json:"cacheWrite5mTokens"`
 	CacheWrite1hTokens int64     `json:"cacheWrite1hTokens"`
 	CostUSD            float64   `json:"costUsd"`
+	AgentID            string    `json:"agentId,omitempty"` // the subagent run that made it; "" is the coordinator
 }
 
 // Tokens is the sum of the four counts.
@@ -59,18 +104,53 @@ func (u SessionUsage) Tokens() int64 {
 	return u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokens
 }
 
-// SessionSummaryRow is one group of GET /api/sessions/summary.
+// SessionSummaryRow is one group of GET /api/sessions/summary. Messages and
+// CacheReadTokens are set for every group; the other fields only for the
+// groups named on them.
 type SessionSummaryRow struct {
-	Key      string  `json:"key"`
-	Sessions int     `json:"sessions"`
-	Tokens   int64   `json:"tokens"`
-	CostUSD  float64 `json:"costUsd"`
+	Key             string  `json:"key"`
+	Sessions        int     `json:"sessions"`
+	Messages        int     `json:"messages"`
+	Tokens          int64   `json:"tokens"`
+	CacheReadTokens int64   `json:"cacheReadTokens"`
+	CostUSD         float64 `json:"costUsd"`
+
+	Runs int `json:"runs,omitempty"` // agent_type: subagent runs (coordinator: sessions)
+
+	// agent: one row per run; Key is the agent id.
+	Type        string     `json:"type,omitempty"`
+	Description string     `json:"description,omitempty"`
+	Issue       string     `json:"issue,omitempty"`
+	Model       string     `json:"model,omitempty"`
+	Session     string     `json:"session,omitempty"` // external id of the run's session
+	StartedAt   *time.Time `json:"startedAt,omitempty"`
+	EndedAt     *time.Time `json:"endedAt,omitempty"`
+
+	// ticket: Coordinator marks the hub coordinator's overhead on its branch
+	// key; CostByType and RunsByType split the row by agent type.
+	Coordinator bool               `json:"coordinator,omitempty"`
+	CostByType  map[string]float64 `json:"costByType,omitempty"`
+	RunsByType  map[string]int     `json:"runsByType,omitempty"`
+	LastAt      *time.Time         `json:"lastAt,omitempty"`
 }
 
 // branchKeyRe finds a ticket key at the start of a branch path segment:
 // `feature/biz-277-home` → biz-277. The prefix is 2-6 letters or digits
 // starting with a letter, so `release-2026` is not read as a ticket.
 var branchKeyRe = regexp.MustCompile(`(?:^|/)([A-Za-z][A-Za-z0-9]{1,5})-([0-9]+)(?:$|[-/_.])`)
+
+// textKeyRe finds an upper-case ticket key anywhere in a run's description:
+// "Build BIZ-278 sessions backend" → BIZ-278.
+var textKeyRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9])([A-Z][A-Z0-9]{1,5}-[0-9]+)(?:$|[^A-Za-z0-9])`)
+
+// IssueKeyFromText returns the first upper-case ticket key a short text
+// names, or "".
+func IssueKeyFromText(s string) string {
+	if m := textKeyRe.FindStringSubmatch(s); m != nil {
+		return m[1]
+	}
+	return ""
+}
 
 // IssueKeysFromBranch returns the ticket keys a branch name carries, upper
 // case, in order, without repeats. nil when there is none.

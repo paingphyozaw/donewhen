@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,7 +25,24 @@ const (
 	SessionGroupProject = "project"
 	SessionGroupModel   = "model"
 	SessionGroupIssue   = "issue"
+	// BIZ-282
+	SessionGroupKind      = "kind"       // input, output, cache_read, cache_write
+	SessionGroupAgentType = "agent_type" // coordinator, implementer, reviewer, …
+	SessionGroupAgent     = "agent"      // one row per subagent run
+	SessionGroupTicket    = "ticket"     // ticket key × coordinator overhead, split by agent type
 )
+
+// AgentTypeCoordinator is the agent type of a session's main transcript.
+const AgentTypeCoordinator = "coordinator"
+
+// agentTypeExpr names the agent type of a message (alias m) joined to its run
+// (alias a): the coordinator for the main transcript, "unknown" for a run the
+// importer sent no meta for.
+const agentTypeExpr = `CASE WHEN m.agent_id IS NULL THEN 'coordinator' ELSE coalesce(nullif(a.agent_type, ''), 'unknown') END`
+
+// msgJoin joins each message (alias m) to its session (s) and its run (a).
+const msgJoin = `ai_session_messages m JOIN ai_sessions s ON s.id = m.session_id
+		LEFT JOIN ai_session_agents a ON a.workspace_id = m.workspace_id AND a.agent_id = m.agent_id`
 
 const (
 	defaultSessionLimit = 100
@@ -43,7 +61,15 @@ const (
 // end is latest. Once the session holds messages, its start and end are the
 // times of its first and last message, and its ticket keys are the keys of
 // its messages' branches.
-func (s *Store) SaveSession(ctx context.Context, wsID string, in models.AgentSession, msgs []models.SessionMessage) (models.AgentSession, error) {
+//
+// agents are the session's subagent runs (BIZ-282). A run belongs to the
+// session that first sent it; a later push of the same session refreshes its
+// type, description and key. A message's ticket key is its run's key when the
+// run's description names one, else the key of its branch (msgs[i].IssueKey).
+// A message this session already holds gets its agent id and key refreshed
+// (an empty agent id keeps the stored one); its tokens and cost never change,
+// and a message another session owns is never touched.
+func (s *Store) SaveSession(ctx context.Context, wsID string, in models.AgentSession, msgs []models.SessionMessage, agents []models.SessionAgent) (models.AgentSession, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return models.AgentSession{}, err
@@ -73,11 +99,31 @@ func (s *Store) SaveSession(ctx context.Context, wsID string, in models.AgentSes
 		return models.AgentSession{}, err
 	}
 
+	if len(agents) > 0 {
+		n := len(agents)
+		aid, typ, desc, mdl, key := make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]string, n)
+		for i, a := range agents {
+			aid[i], typ[i], desc[i], mdl[i], key[i] = a.ID, a.Type, a.Description, a.Model, a.IssueKey
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO ai_session_agents AS a (workspace_id, session_id, agent_id, agent_type, description, model, issue_key)
+			SELECT $1, $2, x.id, x.t, x.d, x.m, nullif(x.k, '')
+			FROM unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[]) AS x(id, t, d, m, k)
+			ORDER BY x.id
+			ON CONFLICT (workspace_id, agent_id) DO UPDATE SET
+				agent_type = EXCLUDED.agent_type, description = EXCLUDED.description, issue_key = EXCLUDED.issue_key,
+				model = CASE WHEN EXCLUDED.model <> '' THEN EXCLUDED.model ELSE a.model END, updated_at = now()
+			WHERE a.session_id = EXCLUDED.session_id`,
+			wsID, id, aid, typ, desc, mdl, key); err != nil {
+			return models.AgentSession{}, err
+		}
+	}
+
 	if len(msgs) > 0 {
 		n := len(msgs)
 		ids, mdl := make([]string, n), make([]string, n)
 		at := make([]*time.Time, n)
-		branch, key := make([]string, n), make([]*string, n)
+		branch, key, agent := make([]string, n), make([]*string, n), make([]*string, n)
 		inTok, outTok, cr, w5, w1 := make([]int64, n), make([]int64, n), make([]int64, n), make([]int64, n), make([]int64, n)
 		cost := make([]float64, n)
 		for i, m := range msgs {
@@ -91,18 +137,40 @@ func (s *Store) SaveSession(ctx context.Context, wsID string, in models.AgentSes
 				k := m.IssueKey
 				key[i] = &k
 			}
+			if m.AgentID != "" {
+				a := m.AgentID
+				agent[i] = &a
+			}
 			inTok[i], outTok[i], cr[i], w5[i], w1[i] = m.InputTokens, m.OutputTokens, m.CacheReadTokens, m.CacheWrite5mTokens, m.CacheWrite1hTokens
 			cost[i] = m.CostUSD
 		}
+		// m.issue_key is the branch key; a run whose description names a key overrides it.
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO ai_session_messages (workspace_id, session_id, message_id, model, at, branch, issue_key,
+			INSERT INTO ai_session_messages AS t (workspace_id, session_id, message_id, model, at, branch, issue_key, agent_id,
 				input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, cost_usd)
-			SELECT $1, $2, m.id, m.model, m.at, m.branch, m.issue_key, m.i, m.o, m.cr, m.w5, m.w1, m.cost::numeric(14,6)
+			SELECT $1, $2, m.id, m.model, m.at, m.branch, coalesce(ag.issue_key, m.issue_key), m.agent,
+				m.i, m.o, m.cr, m.w5, m.w1, m.cost::numeric(14,6)
 			FROM unnest($3::text[], $4::text[], $5::timestamptz[], $6::bigint[], $7::bigint[], $8::bigint[], $9::bigint[],
-				$10::bigint[], $11::float8[], $12::text[], $13::text[]) AS m(id, model, at, i, o, cr, w5, w1, cost, branch, issue_key)
+				$10::bigint[], $11::float8[], $12::text[], $13::text[], $14::text[])
+				AS m(id, model, at, i, o, cr, w5, w1, cost, branch, issue_key, agent)
+			LEFT JOIN ai_session_agents ag ON ag.workspace_id = $1 AND ag.agent_id = m.agent
 			ORDER BY m.id -- one lock order for every push, so concurrent pushes with shared ids cannot deadlock
-			ON CONFLICT (workspace_id, message_id) DO NOTHING`,
-			wsID, id, ids, mdl, at, inTok, outTok, cr, w5, w1, cost, branch, key); err != nil {
+			ON CONFLICT (workspace_id, message_id) DO UPDATE SET
+				agent_id = coalesce(EXCLUDED.agent_id, t.agent_id),
+				issue_key = coalesce((SELECT r.issue_key FROM ai_session_agents r
+					WHERE r.workspace_id = t.workspace_id AND r.agent_id = coalesce(EXCLUDED.agent_id, t.agent_id)), EXCLUDED.issue_key)
+			WHERE t.session_id = EXCLUDED.session_id`,
+			wsID, id, ids, mdl, at, inTok, outTok, cr, w5, w1, cost, branch, key, agent); err != nil {
+			return models.AgentSession{}, err
+		}
+	}
+	if len(agents) > 0 {
+		// Messages of a run saved by an earlier push follow the run's key.
+		if _, err := tx.Exec(ctx, `
+			UPDATE ai_session_messages m SET issue_key = a.issue_key
+			FROM ai_session_agents a
+			WHERE m.session_id = $1 AND a.workspace_id = m.workspace_id AND a.agent_id = m.agent_id
+				AND a.issue_key IS NOT NULL AND m.issue_key IS DISTINCT FROM a.issue_key`, id); err != nil {
 			return models.AgentSession{}, err
 		}
 	}
@@ -247,6 +315,7 @@ func (s *Store) listSessions(ctx context.Context, wsID, where string, args []any
 			a.IssueKeys = []string{}
 		}
 		a.Usage = []models.SessionUsage{}
+		a.Agents = []models.SessionRun{}
 		index[a.ID] = len(out)
 		ids = append(ids, a.ID)
 		out = append(out, a)
@@ -277,15 +346,72 @@ func (s *Store) listSessions(ctx context.Context, wsID, where string, args []any
 		a.Tokens += u.Tokens()
 		a.CostUSD += u.CostUSD
 	}
-	return out, urows.Err()
+	if err := urows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Kinds = kindsOfUsage(out[i].Usage)
+	}
+
+	// The subagent runs of each session, with the usage of their messages.
+	arows, err := s.pool.Query(ctx, `
+		SELECT m.session_id, m.agent_id, coalesce(a.agent_type, ''), coalesce(a.description, ''),
+			coalesce(a.issue_key, mode() WITHIN GROUP (ORDER BY m.issue_key), ''),
+			coalesce(nullif(a.model, ''), mode() WITHIN GROUP (ORDER BY m.model)),
+			count(*)::int, sum(m.input_tokens + m.output_tokens + m.cache_read_tokens + m.cache_write_5m_tokens + m.cache_write_1h_tokens)::bigint,
+			sum(m.cost_usd)::float8
+		FROM ai_session_messages m
+		LEFT JOIN ai_session_agents a ON a.workspace_id = m.workspace_id AND a.agent_id = m.agent_id
+		WHERE m.session_id = ANY($1::uuid[]) AND m.agent_id IS NOT NULL
+		GROUP BY m.session_id, m.agent_id, a.agent_type, a.description, a.issue_key, a.model
+		ORDER BY sum(m.cost_usd) DESC, m.agent_id`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer arows.Close()
+	for arows.Next() {
+		var sid string
+		var r models.SessionRun
+		if err := arows.Scan(&sid, &r.ID, &r.Type, &r.Description, &r.Issue, &r.Model, &r.Messages, &r.Tokens, &r.CostUSD); err != nil {
+			return nil, err
+		}
+		a := &out[index[sid]]
+		a.Agents = append(a.Agents, r)
+	}
+	return out, arows.Err()
+}
+
+// kindsOfUsage splits a session's cost by token kind, model by model.
+func kindsOfUsage(usage []models.SessionUsage) []models.KindCost {
+	var tok [4]int64
+	var cost [4]float64
+	for _, u := range usage {
+		k := models.KindCosts(u.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWrite5mTokens, u.CacheWrite1hTokens, u.CostUSD)
+		tok[0] += u.InputTokens
+		tok[1] += u.OutputTokens
+		tok[2] += u.CacheReadTokens
+		tok[3] += u.CacheWrite5mTokens + u.CacheWrite1hTokens
+		for i := range k {
+			cost[i] += k[i]
+		}
+	}
+	out := make([]models.KindCost, len(models.TokenKinds))
+	for i, kind := range models.TokenKinds {
+		out[i] = models.KindCost{Kind: kind, Tokens: tok[i], CostUSD: cost[i]}
+	}
+	return out
 }
 
 // SessionSummary sums messages per day (UTC, of each message's time),
-// project (of its session), model, or ticket key (of the branch the message
-// was made on; "" for none). Every message counts in exactly one group, so the
-// groups add up to the real total. sessions counts the distinct sessions with
-// messages in the group. The filters apply to messages: from/to to their time,
-// issue to their ticket key.
+// project (of its session), model, or ticket key (the key of the message's
+// run, else of its branch; "" for none). Every message counts in exactly one
+// group, so the groups add up to the real total. sessions counts the distinct
+// sessions with messages in the group. The filters apply to messages: from/to
+// to their time, issue to their ticket key.
+//
+// BIZ-282 adds kind (cost split by token kind), agent_type (coordinator and
+// each subagent type), agent (one row per subagent run) and ticket (per
+// ticket key, split by agent type, with the hub coordinator's overhead apart).
 func (s *Store) SessionSummary(ctx context.Context, wsID string, f SessionFilter, group string) ([]models.SessionSummaryRow, error) {
 	var key string
 	order := "sum(m.cost_usd) DESC, key"
@@ -299,17 +425,25 @@ func (s *Store) SessionSummary(ctx context.Context, wsID string, f SessionFilter
 		key = "coalesce(m.issue_key, '')"
 	case SessionGroupModel:
 		key = "m.model"
+	case SessionGroupAgentType:
+		return s.summaryByAgentType(ctx, wsID, f)
+	case SessionGroupKind:
+		return s.summaryByKind(ctx, wsID, f)
+	case SessionGroupAgent:
+		return s.summaryByAgent(ctx, wsID, f)
+	case SessionGroupTicket:
+		return s.summaryByTicket(ctx, wsID, f)
 	default:
-		return nil, invalid("group must be day, project, model or issue")
+		return nil, invalid("group must be day, project, model, issue, kind, agent_type, agent or ticket")
 	}
 	where, args := messageWhere(f, 2)
 	q := fmt.Sprintf(`
-		SELECT %s AS key, count(DISTINCT m.session_id),
+		SELECT %s AS key, count(DISTINCT m.session_id), count(*)::int,
 			coalesce(sum(m.input_tokens + m.output_tokens + m.cache_read_tokens + m.cache_write_5m_tokens + m.cache_write_1h_tokens), 0)::bigint,
-			coalesce(sum(m.cost_usd), 0)::float8
-		FROM ai_session_messages m JOIN ai_sessions s ON s.id = m.session_id
+			coalesce(sum(m.cache_read_tokens), 0)::bigint, coalesce(sum(m.cost_usd), 0)::float8
+		FROM %s
 		WHERE m.workspace_id=$1 AND s.workspace_id=$1 AND %s
-		GROUP BY key ORDER BY %s`, key, where, order)
+		GROUP BY key ORDER BY %s`, key, msgJoin, where, order)
 	rows, err := s.pool.Query(ctx, q, append([]any{wsID}, args...)...)
 	if err != nil {
 		return nil, err
@@ -318,10 +452,217 @@ func (s *Store) SessionSummary(ctx context.Context, wsID string, f SessionFilter
 	out := []models.SessionSummaryRow{}
 	for rows.Next() {
 		var r models.SessionSummaryRow
-		if err := rows.Scan(&r.Key, &r.Sessions, &r.Tokens, &r.CostUSD); err != nil {
+		if err := rows.Scan(&r.Key, &r.Sessions, &r.Messages, &r.Tokens, &r.CacheReadTokens, &r.CostUSD); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// tokenSum is the SQL sum of a message's four counts.
+const tokenSum = "(m.input_tokens + m.output_tokens + m.cache_read_tokens + m.cache_write_5m_tokens + m.cache_write_1h_tokens)"
+
+// summaryByAgentType: one row per agent type. runs is the number of subagent
+// runs of the type; for the coordinator it is the number of sessions.
+func (s *Store) summaryByAgentType(ctx context.Context, wsID string, f SessionFilter) ([]models.SessionSummaryRow, error) {
+	where, args := messageWhere(f, 2)
+	q := fmt.Sprintf(`
+		SELECT %s AS key, count(DISTINCT m.session_id), count(*)::int,
+			count(DISTINCT coalesce(m.agent_id, m.session_id::text))::int,
+			coalesce(sum(%s), 0)::bigint, coalesce(sum(m.cache_read_tokens), 0)::bigint, coalesce(sum(m.cost_usd), 0)::float8
+		FROM %s
+		WHERE m.workspace_id=$1 AND s.workspace_id=$1 AND %s
+		GROUP BY key ORDER BY sum(m.cost_usd) DESC, key`, agentTypeExpr, tokenSum, msgJoin, where)
+	rows, err := s.pool.Query(ctx, q, append([]any{wsID}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []models.SessionSummaryRow{}
+	for rows.Next() {
+		var r models.SessionSummaryRow
+		if err := rows.Scan(&r.Key, &r.Sessions, &r.Messages, &r.Runs, &r.Tokens, &r.CacheReadTokens, &r.CostUSD); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// summaryByKind splits the cost by token kind. Each model's stored cost is
+// split with the price table and scaled to what was stored, so the four rows
+// add up to the total cost. No messages → no rows.
+func (s *Store) summaryByKind(ctx context.Context, wsID string, f SessionFilter) ([]models.SessionSummaryRow, error) {
+	where, args := messageWhere(f, 2)
+	q := fmt.Sprintf(`
+		SELECT m.model, sum(m.input_tokens)::bigint, sum(m.output_tokens)::bigint, sum(m.cache_read_tokens)::bigint,
+			sum(m.cache_write_5m_tokens)::bigint, sum(m.cache_write_1h_tokens)::bigint, sum(m.cost_usd)::float8,
+			count(*)::int, array_agg(DISTINCT m.session_id::text)
+		FROM %s
+		WHERE m.workspace_id=$1 AND s.workspace_id=$1 AND %s
+		GROUP BY m.model`, msgJoin, where)
+	rows, err := s.pool.Query(ctx, q, append([]any{wsID}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var usage []models.SessionUsage
+	sessions := map[string]bool{}
+	messages := 0
+	for rows.Next() {
+		var u models.SessionUsage
+		var n int
+		var sids []string
+		if err := rows.Scan(&u.Model, &u.InputTokens, &u.OutputTokens, &u.CacheReadTokens,
+			&u.CacheWrite5mTokens, &u.CacheWrite1hTokens, &u.CostUSD, &n, &sids); err != nil {
+			return nil, err
+		}
+		usage = append(usage, u)
+		messages += n
+		for _, id := range sids {
+			sessions[id] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := []models.SessionSummaryRow{}
+	if len(usage) == 0 {
+		return out, nil
+	}
+	var cacheRead int64
+	for _, u := range usage {
+		cacheRead += u.CacheReadTokens
+	}
+	for _, k := range kindsOfUsage(usage) {
+		out = append(out, models.SessionSummaryRow{Key: k.Kind, Sessions: len(sessions), Messages: messages,
+			Tokens: k.Tokens, CacheReadTokens: cacheRead, CostUSD: k.CostUSD})
+	}
+	return out, nil
+}
+
+// summaryByAgent: one row per subagent run with messages in the filter. Its
+// ticket is the key its description names, else the most common key of its
+// messages; its model is the meta's, else its most used model.
+func (s *Store) summaryByAgent(ctx context.Context, wsID string, f SessionFilter) ([]models.SessionSummaryRow, error) {
+	where, args := messageWhere(f, 2)
+	q := fmt.Sprintf(`
+		SELECT m.agent_id, min(s.external_id), coalesce(nullif(a.agent_type, ''), 'unknown'), coalesce(a.description, ''),
+			coalesce(a.issue_key, mode() WITHIN GROUP (ORDER BY m.issue_key), ''),
+			coalesce(nullif(a.model, ''), mode() WITHIN GROUP (ORDER BY m.model)),
+			min(coalesce(m.at, s.started_at)), max(coalesce(m.at, s.started_at)),
+			count(DISTINCT m.session_id), count(*)::int,
+			coalesce(sum(%s), 0)::bigint, coalesce(sum(m.cache_read_tokens), 0)::bigint, coalesce(sum(m.cost_usd), 0)::float8
+		FROM %s
+		WHERE m.workspace_id=$1 AND s.workspace_id=$1 AND m.agent_id IS NOT NULL AND %s
+		GROUP BY m.agent_id, a.agent_type, a.description, a.issue_key, a.model
+		ORDER BY sum(m.cost_usd) DESC, m.agent_id`, tokenSum, msgJoin, where)
+	rows, err := s.pool.Query(ctx, q, append([]any{wsID}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []models.SessionSummaryRow{}
+	for rows.Next() {
+		var r models.SessionSummaryRow
+		var start, end time.Time
+		if err := rows.Scan(&r.Key, &r.Session, &r.Type, &r.Description, &r.Issue, &r.Model, &start, &end,
+			&r.Sessions, &r.Messages, &r.Tokens, &r.CacheReadTokens, &r.CostUSD); err != nil {
+			return nil, err
+		}
+		r.StartedAt, r.EndedAt = &start, &end
+		r.Runs = 1
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// coordinatorExpr marks hub coordinator overhead: a message whose key comes
+// only from its branch (the coordinator's own, or a run whose description
+// names no key) in a session that runs agents for another ticket. Such a
+// session is a hub coordinator: its branch is where it sits, not what it
+// works on. A session opened on a ticket's own branch stays that ticket's work.
+const coordinatorExpr = `((m.agent_id IS NULL OR a.issue_key IS NULL) AND EXISTS (
+	SELECT 1 FROM ai_session_agents h
+	WHERE h.session_id = m.session_id AND h.issue_key IS NOT NULL AND h.issue_key <> coalesce(m.issue_key, '')))`
+
+// summaryByTicket: one row per ticket key, and one more per key that hub
+// coordinators sat on (Coordinator true). Each row is split by agent type.
+func (s *Store) summaryByTicket(ctx context.Context, wsID string, f SessionFilter) ([]models.SessionSummaryRow, error) {
+	where, args := messageWhere(f, 2)
+	q := fmt.Sprintf(`
+		SELECT coalesce(m.issue_key, '') AS key, %s AS coord, %s AS type,
+			array_agg(DISTINCT m.session_id::text), count(*)::int, count(DISTINCT m.agent_id)::int,
+			coalesce(sum(%s), 0)::bigint, coalesce(sum(m.cache_read_tokens), 0)::bigint, coalesce(sum(m.cost_usd), 0)::float8,
+			max(coalesce(m.at, s.started_at))
+		FROM %s
+		WHERE m.workspace_id=$1 AND s.workspace_id=$1 AND %s
+		GROUP BY key, coord, type`, coordinatorExpr, agentTypeExpr, tokenSum, msgJoin, where)
+	rows, err := s.pool.Query(ctx, q, append([]any{wsID}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type rowKey struct {
+		key   string
+		coord bool
+	}
+	byKey := map[rowKey]*models.SessionSummaryRow{}
+	sessions := map[rowKey]map[string]bool{}
+	var order []rowKey
+	for rows.Next() {
+		var k rowKey
+		var typ string
+		var sids []string
+		var n, runs int
+		var tok, cr int64
+		var cost float64
+		var last time.Time
+		if err := rows.Scan(&k.key, &k.coord, &typ, &sids, &n, &runs, &tok, &cr, &cost, &last); err != nil {
+			return nil, err
+		}
+		r, ok := byKey[k]
+		if !ok {
+			r = &models.SessionSummaryRow{Key: k.key, Coordinator: k.coord,
+				CostByType: map[string]float64{}, RunsByType: map[string]int{}}
+			byKey[k], sessions[k] = r, map[string]bool{}
+			order = append(order, k)
+		}
+		for _, id := range sids {
+			sessions[k][id] = true
+		}
+		r.Messages += n
+		r.Tokens += tok
+		r.CacheReadTokens += cr
+		r.CostUSD += cost
+		r.CostByType[typ] += cost
+		if typ != AgentTypeCoordinator {
+			r.RunsByType[typ] += runs
+			r.Runs += runs
+		}
+		if r.LastAt == nil || last.After(*r.LastAt) {
+			l := last
+			r.LastAt = &l
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]models.SessionSummaryRow, 0, len(order))
+	for _, k := range order {
+		r := byKey[k]
+		r.Sessions = len(sessions[k])
+		out = append(out, *r)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CostUSD != out[j].CostUSD {
+			return out[i].CostUSD > out[j].CostUSD
+		}
+		if out[i].Key != out[j].Key {
+			return out[i].Key < out[j].Key
+		}
+		return !out[i].Coordinator
+	})
+	return out, nil
 }

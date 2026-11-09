@@ -76,3 +76,28 @@ func MessageCost(m SessionMessage) float64 {
 		float64(m.CacheWrite5mTokens)*p.Input*cacheWrite5mFactor +
 		float64(m.CacheWrite1hTokens)*p.Input*cacheWrite1hFactor) / perMillion
 }
+
+// KindCosts splits the cost of a model's tokens by token kind (input,
+// output, cache read, cache write; the order of TokenKinds) with the price
+// table, scaled so the four add up to stored: the cost saved with the
+// messages. A model the table does not know, or a stored cost of 0, gives
+// zeros.
+func KindCosts(model string, in, out, cacheRead, write5m, write1h int64, stored float64) [4]float64 {
+	var k [4]float64
+	p, ok := PriceFor(model)
+	if !ok || stored == 0 {
+		return k
+	}
+	k[0] = float64(in) * p.Input
+	k[1] = float64(out) * p.Output
+	k[2] = float64(cacheRead) * p.CacheRead
+	k[3] = float64(write5m)*p.Input*cacheWrite5mFactor + float64(write1h)*p.Input*cacheWrite1hFactor
+	sum := k[0] + k[1] + k[2] + k[3]
+	if sum == 0 {
+		return [4]float64{}
+	}
+	for i := range k {
+		k[i] = k[i] / sum * stored
+	}
+	return k
+}
