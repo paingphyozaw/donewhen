@@ -63,7 +63,7 @@ test('fillDays adds zero rows for days without sessions', () => {
 	];
 	const out = fillDays(rows, '2026-11-03', '2026-11-06');
 	assert.deepEqual(out.map((r) => r.key), ['2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06']);
-	assert.deepEqual(out[1], { key: '2026-11-04', sessions: 0, tokens: 0, costUsd: 0 });
+	assert.deepEqual(out[1], { key: '2026-11-04', sessions: 0, tokens: 0, costUsd: 0, kinds: [] });
 	assert.equal(out[2].costUsd, 0.5);
 });
 
