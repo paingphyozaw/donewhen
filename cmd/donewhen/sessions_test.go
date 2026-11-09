@@ -324,6 +324,17 @@ func TestPushSubagentFileAlone(t *testing.T) {
 	if got := ids(f.messages(sid)); len(f.bodies) != 1 || got != "msg_5" {
 		t.Fatalf("sent %v / %s", f.bodies, got)
 	}
+	// A workflow journal is not a transcript: refused, nothing sent.
+	errOut.Reset()
+	journal := filepath.Join(dir, sid, "subagents", "workflows", "wf_1", "journal.jsonl")
+	if code := runSessions([]string{"push", "--file", journal},
+		envOf(map[string]string{"DONEWHEN_URL": srv.URL, "DONEWHEN_TOKEN": "t"}), &out, &errOut); code != 2 ||
+		!strings.Contains(errOut.String(), "not a transcript") {
+		t.Fatalf("journal: exit %d, stderr %q", code, errOut.String())
+	}
+	if len(f.bodies[sid]) != 1 {
+		t.Fatalf("journal push sent %d bodies", len(f.bodies[sid]))
+	}
 }
 
 func TestPushDirSince(t *testing.T) {

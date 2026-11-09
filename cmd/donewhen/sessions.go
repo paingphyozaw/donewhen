@@ -329,13 +329,20 @@ func subagentFiles(mainPath string) []string {
 			return nil // a missing or unreadable folder: no subagents
 		}
 		name := d.Name()
-		if !d.IsDir() && strings.HasPrefix(name, "agent-") && strings.HasSuffix(name, ".jsonl") {
+		if !d.IsDir() && isSubagentTranscript(name) {
 			out = append(out, p)
 		}
 		return nil
 	})
 	sort.Strings(out)
 	return out
+}
+
+// isSubagentTranscript reports whether a file under subagents/ is an agent
+// transcript; journal.jsonl and other files there are not.
+func isSubagentTranscript(path string) bool {
+	name := filepath.Base(path)
+	return strings.HasPrefix(name, "agent-") && strings.HasSuffix(name, ".jsonl")
 }
 
 // transcriptAt reads a path given with --file. A file under
@@ -458,7 +465,12 @@ func runSessions(args []string, env func(string) string, stdout, stderr io.Write
 
 	var list []transcript
 	if *file != "" {
-		list = []transcript{transcriptAt(*file)}
+		t := transcriptAt(*file)
+		if t.whole && !isSubagentTranscript(*file) {
+			fmt.Fprintf(stderr, "%s is not a transcript: under subagents/ only agent-*.jsonl files are (journal.jsonl is not)\n", *file)
+			return 2
+		}
+		list = []transcript{t}
 	} else {
 		found, err := findTranscripts(*dir)
 		if err != nil {

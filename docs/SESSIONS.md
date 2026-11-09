@@ -29,6 +29,7 @@ The server stores one row per message (`ai_session_messages`). A message id is u
 - A push is **additive and idempotent**: it adds the messages the server does not have yet. Sending the same push again changes nothing. Sending only part of a session (for example one subagent file) never reduces it.
 - After each push the server rebuilds the session's per-model sums (`ai_session_usage`), its message count, and its start and end (the times of its first and last message).
 - `--dir` sends the oldest files first, so a first session gets its messages before the session that resumed it.
+- With `--file` (and the hook), the session pushed first keeps the shared messages. If you push a resumed session's file before the original session's file, the resumed session keeps the copied messages. The totals are still right; only which session shows them differs. Push with `--dir` to get the oldest-first order.
 
 ## Cost
 
@@ -51,7 +52,7 @@ donewhen sessions push --dir ~/.claude/projects --since 2026-11-01
 ```
 
 - `--dir` reads every `*.jsonl` file under the folder. `--since` skips sessions whose files all last changed before that date.
-- `--file` on a subagent file (`<session>/subagents/…/agent-*.jsonl`) sends it to its parent session.
+- `--file` on a subagent file (`<session>/subagents/…/agent-*.jsonl`) sends it to its parent session. Any other file under `subagents/` (such as `journal.jsonl`) is refused with exit code `2`.
 - A session goes in chunks of 2,000 messages per request, so a long session stays under the body size limit.
 - It prints one line per session: `sent <id> <tokens> $<cost>`.
 - The exit code is `1` if any session failed.

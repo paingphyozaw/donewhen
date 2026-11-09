@@ -92,6 +92,7 @@ func (s *Store) SaveSession(ctx context.Context, wsID string, in models.AgentSes
 			SELECT $1, $2, m.id, m.model, m.at, m.i, m.o, m.cr, m.w5, m.w1, m.cost::numeric(14,6)
 			FROM unnest($3::text[], $4::text[], $5::timestamptz[], $6::bigint[], $7::bigint[], $8::bigint[], $9::bigint[],
 				$10::bigint[], $11::float8[]) AS m(id, model, at, i, o, cr, w5, w1, cost)
+			ORDER BY m.id -- one lock order for every push, so concurrent pushes with shared ids cannot deadlock
 			ON CONFLICT (workspace_id, message_id) DO NOTHING`,
 			wsID, id, ids, mdl, at, inTok, outTok, cr, w5, w1, cost); err != nil {
 			return models.AgentSession{}, err
