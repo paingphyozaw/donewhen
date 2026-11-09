@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"slices"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -213,6 +214,60 @@ func (d *deps) registerContent(s *server.MCPServer) {
 		return jsonResult(saved)
 	})
 
+	// ---- handoff ----
+	s.AddTool(mcp.NewTool("get_handoff",
+		mcp.WithDescription("Read a project's handoff: the note the last session left for the next one. "+
+			"Call it at the start of a session. Returns the latest version (or the one you name) with its "+
+			"body, summary, actor, time and version number."),
+		mcp.WithString("initiative", mcp.Required(), mcp.Description("Project (initiative) id or name")),
+		mcp.WithNumber("version", mcp.Description("Version number; omit for the latest")),
+		wsArg(),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		ref, err := req.RequireString("initiative")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		wsID, ini, err := d.findInitiative(ctx, req, ref)
+		if err != nil {
+			return toolErr(err), nil
+		}
+		version := 0
+		if v := argInt(req, "version"); v != nil {
+			version = *v
+		}
+		h, err := d.store.GetHandoff(ctx, wsID, ini.ID, version)
+		if errors.Is(err, store.ErrNotFound) && version == 0 {
+			return jsonResult(map[string]any{"handoff": nil, "hint": "No handoff yet. Use save_handoff."})
+		}
+		if err != nil {
+			return toolErr(err), nil
+		}
+		return jsonResult(h)
+	})
+
+	s.AddTool(mcp.NewTool("save_handoff",
+		mcp.WithDescription("Save a project's handoff as a new version. Call it at the end of a session with the "+
+			"FULL updated text (not a diff): the latest version replaces the old one, which stays in the history."),
+		mcp.WithString("initiative", mcp.Required(), mcp.Description("Project (initiative) id or name")),
+		mcp.WithString("body", mcp.Required(), mcp.Description("The whole handoff, as Markdown (at most 200,000 characters)")),
+		mcp.WithString("summary", mcp.Required(), mcp.Description("One line: what changed in this version (at most 200 characters)")),
+		wsArg(),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		ref, err := req.RequireString("initiative")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		wsID, ini, err := d.findInitiative(ctx, req, ref)
+		if err != nil {
+			return toolErr(err), nil
+		}
+		h, err := d.svc.SaveHandoff(ctx, wsID, ini.ID, req.GetString("body", ""), req.GetString("summary", ""), "ai")
+		if err != nil {
+			return toolErr(err), nil
+		}
+		return jsonResult(map[string]any{"version": h.Version, "initiative": ini.Name})
+	})
+
 	// ---- coverage ----
 	s.AddTool(mcp.NewTool("list_issues_missing_docs",
 		mcp.WithDescription("List completed (Done) issues that have no attached document yet — the gaps in the "+
@@ -245,4 +300,14 @@ func (d *deps) registerContent(s *server.MCPServer) {
 		}
 		return jsonResult(u)
 	})
+}
+
+// findInitiative resolves an initiative named by id or name in the workspaces
+// this call can reach (or the one it names).
+func (d *deps) findInitiative(ctx context.Context, req mcp.CallToolRequest, ref string) (string, models.Initiative, error) {
+	wsIDs, err := d.scopeAll(ctx, req)
+	if err != nil {
+		return "", models.Initiative{}, err
+	}
+	return d.store.FindInitiative(ctx, wsIDs, ref)
 }
