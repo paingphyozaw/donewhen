@@ -11,6 +11,7 @@
 //	donewhen demo [--workspace s]  seed a sample "Demo" workspace
 //	donewhen genvapid              print a fresh VAPID keypair
 //	donewhen sessions push ...     send Claude Code session token usage to a server
+//	donewhen handoff import ...    save a Markdown file as a project's next handoff version
 package main
 
 import (
@@ -63,6 +64,8 @@ func main() {
 		runWorkspace(os.Args[2:])
 	case "demo":
 		runDemo(os.Args[2:])
+	case "handoff":
+		runHandoff(os.Args[2:])
 	case "genvapid":
 		runGenVAPID()
 	case "sessions":
@@ -87,6 +90,7 @@ usage:
   donewhen token <name> [ws]     create an API token; pass a workspace slug to pin it
   donewhen user <email> <pass>   create the initial user
   donewhen genvapid              print a fresh VAPID keypair
+  donewhen handoff import --initiative <name|id> --file <path>   save a Markdown file as the next handoff version (needs DONEWHEN_URL + a token)
 
   donewhen sessions push --file <transcript.jsonl>          send one Claude Code session's token usage
   donewhen sessions push --dir <dir> [--since YYYY-MM-DD]   send every session under a folder

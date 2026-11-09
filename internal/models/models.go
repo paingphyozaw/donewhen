@@ -239,3 +239,15 @@ type Activity struct {
 	Detail     string    `json:"detail,omitempty"`
 	CreatedAt  time.Time `json:"createdAt"`
 }
+
+// Handoff is one saved version of a project's handoff note (BIZ-280). The
+// latest version is the handoff; older ones are its history. List rows leave
+// BodyMD empty.
+type Handoff struct {
+	Version      int       `json:"version"`
+	InitiativeID string    `json:"initiativeId"`
+	BodyMD       string    `json:"bodyMd,omitempty"`
+	Summary      string    `json:"summary"`
+	Actor        string    `json:"actor"` // human | ai
+	CreatedAt    time.Time `json:"createdAt"`
+}

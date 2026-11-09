@@ -20,6 +20,7 @@
 		title_changed: '✎',
 		commented: '✎',
 		artifact_written: '▤',
+		handoff_saved: '▤',
 		deleted: '✕',
 		commit_linked: '⎇',
 		criterion_checked: '✓',
@@ -27,7 +28,7 @@
 		assignee_changed: '◐',
 		description_changed: '≡'
 	};
-	const ACCENT = new Set(['artifact_written', 'commit_linked', 'criterion_checked']);
+	const ACCENT = new Set(['artifact_written', 'handoff_saved', 'commit_linked', 'criterion_checked']);
 	const DANGER = new Set(['deleted']);
 
 	function verb(a) {
@@ -46,6 +47,8 @@
 				return `commented: “${a.detail}”`;
 			case 'artifact_written':
 				return `wrote artifact “${a.detail}”`;
+			case 'handoff_saved':
+				return a.detail || 'handoff updated';
 			case 'epic_archived':
 				return a.detail ? `archived epic “${a.detail}”` : 'archived an epic';
 			case 'epic_unarchived':
