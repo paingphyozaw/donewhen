@@ -132,7 +132,7 @@
 		load(bounds, projectPath, f.issue);
 	});
 
-	const totals = $derived(totalsOf(days));
+	const totals = $derived(totalsOf(days, groups.project));
 	const chartDays = $derived(fillDays(days, bounds.from, bounds.to));
 	const rows = $derived(withShare(groups[tab]));
 	const empty = $derived(!loading && !error && totals.sessions === 0);
@@ -267,12 +267,8 @@
 							</div>
 						{/each}
 					</div>
-					{#if tab !== 'project'}
-						<p class="note">
-							{tab === 'issue'
-								? 'A session on several tickets counts under each of them.'
-								: 'A session that used several models counts under each of them.'}
-						</p>
+					{#if tab === 'model'}
+						<p class="note">A session that used several models counts under each of them.</p>
 					{/if}
 				</section>
 

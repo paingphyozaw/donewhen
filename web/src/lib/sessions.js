@@ -85,13 +85,16 @@ export function modelLabel(model) {
 	return model ? model.replace(/^claude-/, '') : 'unknown';
 }
 
-// totalsOf sums day rows (a session belongs to exactly one day, so nothing is counted twice).
-export function totalsOf(dayRows) {
+// totalsOf sums tokens and cost over the day rows. A session spans many days, so its count
+// comes from the project rows instead: a session has exactly one project, so summing
+// `sessions` over them counts each session once.
+export function totalsOf(dayRows, projectRows = dayRows) {
 	const t = dayRows.reduce(
-		(s, r) => ({ sessions: s.sessions + r.sessions, tokens: s.tokens + r.tokens, costUsd: s.costUsd + r.costUsd }),
-		{ sessions: 0, tokens: 0, costUsd: 0 }
+		(s, r) => ({ tokens: s.tokens + r.tokens, costUsd: s.costUsd + r.costUsd }),
+		{ tokens: 0, costUsd: 0 }
 	);
-	return { ...t, avgCostUsd: t.sessions ? t.costUsd / t.sessions : 0 };
+	const sessions = projectRows.reduce((n, r) => n + r.sessions, 0);
+	return { sessions, ...t, avgCostUsd: sessions ? t.costUsd / sessions : 0 };
 }
 
 // niceScale picks a round axis for 0..max: four steps, 1/2/2.5/5 x 10^n.

@@ -93,15 +93,16 @@ test('shortProject keeps the last folder name', () => {
 	assert.equal(shortProject(''), 'No project');
 });
 
-test('totalsOf sums day rows and averages per session', () => {
-	assert.deepEqual(
-		totalsOf([
-			{ key: 'x', sessions: 2, tokens: 100, costUsd: 3 },
-			{ key: 'y', sessions: 2, tokens: 50, costUsd: 1 }
-		]),
-		{ sessions: 4, tokens: 150, costUsd: 4, avgCostUsd: 1 }
-	);
-	assert.deepEqual(totalsOf([]), { sessions: 0, tokens: 0, costUsd: 0, avgCostUsd: 0 });
+test('totalsOf counts distinct sessions from the project rows, not the day rows', () => {
+	// one session that spans three days shows as 1 in each day row
+	const days = [
+		{ key: 'x', sessions: 1, tokens: 100, costUsd: 3 },
+		{ key: 'y', sessions: 1, tokens: 50, costUsd: 1 },
+		{ key: 'z', sessions: 1, tokens: 50, costUsd: 2 }
+	];
+	const projects = [{ key: '/p', sessions: 1, tokens: 200, costUsd: 6 }];
+	assert.deepEqual(totalsOf(days, projects), { sessions: 1, tokens: 200, costUsd: 6, avgCostUsd: 6 });
+	assert.deepEqual(totalsOf([], []), { sessions: 0, tokens: 0, costUsd: 0, avgCostUsd: 0 });
 });
 
 test('niceScale picks round axis steps that cover the max', () => {
