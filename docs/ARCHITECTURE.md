@@ -44,7 +44,7 @@ flowchart LR
 
 ## Commands
 
-`cmd/donewhen/main.go` is the only entry point. Sub-commands: `serve` (default), `migrate`, `mcp` (MCP over stdio), `token`, `user`, `workspace`, `genvapid`.
+`cmd/donewhen/main.go` is the only entry point. Sub-commands: `serve` (default), `migrate`, `mcp` (MCP over stdio), `token`, `user`, `workspace`, `genvapid`, and `sessions push` (sends Claude Code token usage to a server, see [SESSIONS.md](SESSIONS.md)).
 
 The settings come from `DONEWHEN_*` environment variables. `internal/config/config.go` reads them.
 
@@ -92,7 +92,7 @@ These are the steps in words:
 
 1. A REST call or an MCP tool call arrives. Both use the same service methods.
 2. The service calls the store. The store runs SQL.
-3. The service publishes one event on the bus. The types are: `issue.created`, `issue.updated`, `issue.state_changed`, `issue.deleted`, `comment.added`, `document.saved`, `document.deleted` (`internal/events/events.go`).
+3. The service publishes one event on the bus. The types are: `issue.created`, `issue.updated`, `issue.state_changed`, `issue.deleted`, `comment.added`, `document.saved`, `document.deleted`, `session.saved` (`internal/events/events.go`). `session.saved` writes no activity entry.
 4. The service also writes an activity entry. This is best-effort. If the write fails, the call does not fail.
 5. The bus sends the event to each subscriber. If a buffer is full, the bus drops the event. The bus never blocks.
 6. SSE clients get events for their workspace only. The Web Push notifier gets every event. It sends to the members of the workspace of the event.
