@@ -259,8 +259,20 @@ func TestSessionKindSplit(t *testing.T) {
 		t.Fatalf("kinds add up to %v, session costs %v", total, s.CostUSD)
 	}
 	// Every group carries messages and cache-read tokens.
-	if r := summary(t, e, "?group=day", ai)["2026-11-01"]; r.Messages != 3 || r.CacheReadTokens != 2_000_005 {
-		t.Fatalf("day row = %+v", r)
+	day := summary(t, e, "?group=day", ai)["2026-11-01"]
+	if day.Messages != 3 || day.CacheReadTokens != 2_000_005 || len(day.Kinds) != 4 {
+		t.Fatalf("day row = %+v", day)
+	}
+	// The day's kinds split its cost, in the fixed order.
+	var dayTotal float64
+	for i, k := range day.Kinds {
+		if k.Kind != models.TokenKinds[i] {
+			t.Fatalf("kind order = %+v", day.Kinds)
+		}
+		dayTotal += k.CostUSD
+	}
+	if !near(dayTotal, day.CostUSD) || !near(day.Kinds[2].CostUSD, 0.4) {
+		t.Fatalf("day kinds = %+v (cost %v)", day.Kinds, day.CostUSD)
 	}
 	if r := summary(t, e, "?group=kind&from=2030-01-01", ai); len(r) != 0 {
 		t.Fatalf("unexpected rows: %+v", r)

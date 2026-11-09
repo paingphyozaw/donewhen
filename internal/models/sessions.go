@@ -117,6 +117,8 @@ type SessionSummaryRow struct {
 
 	Runs int `json:"runs,omitempty"` // agent_type: subagent runs (coordinator: sessions)
 
+	Kinds []KindCost `json:"kinds,omitempty"` // day: the day's cost split by token kind
+
 	// agent: one row per run; Key is the agent id.
 	Type        string     `json:"type,omitempty"`
 	Description string     `json:"description,omitempty"`

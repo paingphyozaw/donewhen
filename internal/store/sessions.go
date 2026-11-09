@@ -457,7 +457,50 @@ func (s *Store) SessionSummary(ctx context.Context, wsID string, f SessionFilter
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if group == SessionGroupDay && len(out) > 0 {
+		if err := s.addDayKinds(ctx, wsID, f, out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// addDayKinds sets each day row's cost split by token kind (BIZ-282), for the
+// stacked cost-per-day chart.
+func (s *Store) addDayKinds(ctx context.Context, wsID string, f SessionFilter, days []models.SessionSummaryRow) error {
+	where, args := messageWhere(f, 2)
+	q := fmt.Sprintf(`
+		SELECT to_char(coalesce(m.at, s.started_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS key, m.model,
+			sum(m.input_tokens)::bigint, sum(m.output_tokens)::bigint, sum(m.cache_read_tokens)::bigint,
+			sum(m.cache_write_5m_tokens)::bigint, sum(m.cache_write_1h_tokens)::bigint, sum(m.cost_usd)::float8
+		FROM %s
+		WHERE m.workspace_id=$1 AND s.workspace_id=$1 AND %s
+		GROUP BY key, m.model`, msgJoin, where)
+	rows, err := s.pool.Query(ctx, q, append([]any{wsID}, args...)...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	usage := map[string][]models.SessionUsage{}
+	for rows.Next() {
+		var day string
+		var u models.SessionUsage
+		if err := rows.Scan(&day, &u.Model, &u.InputTokens, &u.OutputTokens, &u.CacheReadTokens,
+			&u.CacheWrite5mTokens, &u.CacheWrite1hTokens, &u.CostUSD); err != nil {
+			return err
+		}
+		usage[day] = append(usage[day], u)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range days {
+		days[i].Kinds = kindsOfUsage(usage[days[i].Key])
+	}
+	return nil
 }
 
 // tokenSum is the SQL sum of a message's four counts.
