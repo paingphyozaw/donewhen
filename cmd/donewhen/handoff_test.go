@@ -10,7 +10,7 @@ import (
 )
 
 func TestImportHandoff(t *testing.T) {
-	var gotBody map[string]string
+	var gotBody map[string]any
 	var gotAuth, gotWS, gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth, gotWS = r.Header.Get("Authorization"), r.Header.Get("X-Workspace")
@@ -28,15 +28,15 @@ func TestImportHandoff(t *testing.T) {
 	defer srv.Close()
 
 	c := &handoffClient{http: srv.Client(), base: srv.URL, token: "tok", workspace: "biz"}
-	v, name, err := c.importHandoff("pos", "# H\n\ntext", "Imported from HANDOFF.md")
+	v, name, err := c.importHandoff("pos", "# H\n\ntext", "Imported from HANDOFF.md", true)
 	if err != nil || v != 1 || name != "POS" {
 		t.Fatalf("import = %d %q %v", v, name, err)
 	}
 	if gotPath != "/api/initiatives/i-2/handoff" || gotBody["body"] != "# H\n\ntext" ||
-		gotBody["summary"] != "Imported from HANDOFF.md" || gotAuth != "Bearer tok" || gotWS != "biz" {
+		gotBody["summary"] != "Imported from HANDOFF.md" || gotBody["legacy"] != true || gotAuth != "Bearer tok" || gotWS != "biz" {
 		t.Fatalf("request = %s %v %s %s", gotPath, gotBody, gotAuth, gotWS)
 	}
-	if _, _, err := c.importHandoff("Nope", "x", "y"); err == nil || !strings.Contains(err.Error(), "no project") {
+	if _, _, err := c.importHandoff("Nope", "x", "y", false); err == nil || !strings.Contains(err.Error(), "no project") {
 		t.Fatalf("unknown project err = %v", err)
 	}
 }

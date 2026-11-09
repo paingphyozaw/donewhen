@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/johnreginald/donewhen/internal/models"
+	"github.com/johnreginald/donewhen/internal/service"
 )
 
 func TestHandoffTools(t *testing.T) {
@@ -15,6 +16,7 @@ func TestHandoffTools(t *testing.T) {
 	a := e.workspace(uid)
 	b := e.workspace(uid)
 	ctx := e.ctxFor(uid, a.ID)
+	tmpl := service.HandoffTemplate()
 	if _, err := e.store.SaveInitiative(context.Background(), a.ID, models.Initiative{Name: "POS"}); err != nil {
 		t.Fatal(err)
 	}
@@ -24,31 +26,41 @@ func TestHandoffTools(t *testing.T) {
 	}
 
 	out, isErr := e.call(ctx, "get_handoff", map[string]any{"initiative": "pos"})
-	if isErr || !strings.Contains(out, "No handoff yet. Use save_handoff.") || !strings.Contains(out, `"handoff":null`) {
+	if isErr || !strings.Contains(out, "No handoff yet. Use save_handoff.") || !strings.Contains(out, `"handoff":null`) || !strings.Contains(out, "## Where things are") {
 		t.Fatalf("empty get_handoff = %q (err %v)", out, isErr)
 	}
 
-	out, isErr = e.call(ctx, "save_handoff", map[string]any{"initiative": "POS", "body": "# Full text\n\nline", "summary": "first"})
+	out, isErr = e.call(ctx, "save_handoff", map[string]any{"initiative": "POS", "body": tmpl + "line", "summary": "first"})
 	if isErr || !strings.Contains(out, `"version":1`) {
 		t.Fatalf("save_handoff = %q (err %v)", out, isErr)
 	}
-	e.call(ctx, "save_handoff", map[string]any{"initiative": "POS", "body": "second", "summary": "second"})
+	e.call(ctx, "save_handoff", map[string]any{"initiative": "POS", "body": tmpl + "second", "summary": "second"})
 
 	out, isErr = e.call(ctx, "get_handoff", map[string]any{"initiative": "POS"})
 	var h models.Handoff
-	if err := json.Unmarshal([]byte(out), &h); isErr || err != nil || h.BodyMD != "second" || h.Version != 2 || h.Actor != "ai" {
+	if err := json.Unmarshal([]byte(out), &h); isErr || err != nil || h.BodyMD != tmpl+"second" || h.Version != 2 || h.Actor != "ai" {
 		t.Fatalf("get_handoff = %q (err %v %v)", out, isErr, err)
 	}
 	out, _ = e.call(ctx, "get_handoff", map[string]any{"initiative": "POS", "version": 1})
-	if err := json.Unmarshal([]byte(out), &h); err != nil || h.BodyMD != "# Full text\n\nline" {
+	if err := json.Unmarshal([]byte(out), &h); err != nil || h.BodyMD != tmpl+"line" {
 		t.Fatalf("version 1 = %q", out)
 	}
 
-	if out, isErr = e.call(ctx, "save_handoff", map[string]any{"initiative": "POS", "body": "x", "summary": ""}); !isErr || !strings.Contains(out, "invalid_handoff") {
+	if out, isErr = e.call(ctx, "save_handoff", map[string]any{"initiative": "POS", "body": tmpl, "summary": ""}); !isErr || !strings.Contains(out, "invalid_handoff") {
 		t.Fatalf("empty summary = %q (err %v)", out, isErr)
 	}
+	// get_handoff carries the rules and the template; a bad body is refused with its code.
+	if out, _ = e.call(ctx, "get_handoff", map[string]any{"initiative": "POS"}); !strings.Contains(out, `"rules"`) || !strings.Contains(out, `"template"`) {
+		t.Fatalf("get_handoff lacks rules/template = %q", out)
+	}
+	if out, isErr = e.call(ctx, "save_handoff", map[string]any{"initiative": "POS", "body": "free text", "summary": "s"}); !isErr || !strings.Contains(out, "handoff_sections_missing") || !strings.Contains(out, "## Now") {
+		t.Fatalf("free text = %q (err %v)", out, isErr)
+	}
+	if out, isErr = e.call(ctx, "save_handoff", map[string]any{"initiative": "POS", "body": tmpl + strings.Repeat("l\n", 200), "summary": "s"}); !isErr || !strings.Contains(out, "handoff_too_long") {
+		t.Fatalf("too long = %q (err %v)", out, isErr)
+	}
 	// A token pinned to workspace a cannot reach b's initiative.
-	if out, isErr = e.call(ctx, "save_handoff", map[string]any{"initiative": bIni.ID, "body": "x", "summary": "y"}); !isErr {
+	if out, isErr = e.call(ctx, "save_handoff", map[string]any{"initiative": bIni.ID, "body": tmpl, "summary": "y"}); !isErr {
 		t.Fatalf("cross-workspace save = %q", out)
 	}
 }
@@ -72,6 +84,7 @@ func TestHandoffToolsNameScope(t *testing.T) {
 	}
 
 	pinned := e.ctxFor(uid, a.ID)
+	tmpl := service.HandoffTemplate()
 	for _, tool := range []string{"get_handoff", "save_handoff"} {
 		out, isErr := e.call(pinned, tool, map[string]any{"initiative": only, "body": "x", "summary": "y"})
 		if !isErr || !strings.Contains(out, "not found") {
@@ -87,7 +100,7 @@ func TestHandoffToolsNameScope(t *testing.T) {
 		}
 	}
 	// Naming the workspace resolves it.
-	if out, isErr := e.call(all, "save_handoff", map[string]any{"initiative": shared, "body": "x", "summary": "y", "workspace": a.ID}); isErr {
+	if out, isErr := e.call(all, "save_handoff", map[string]any{"initiative": shared, "body": tmpl, "summary": "y", "workspace": a.ID}); isErr {
 		t.Fatalf("save with workspace = %q", out)
 	}
 	if out, isErr := e.call(all, "get_handoff", map[string]any{"initiative": shared, "version": 5, "workspace": a.ID}); !isErr || !strings.Contains(out, "version 5 not found") {

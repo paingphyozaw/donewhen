@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/johnreginald/donewhen/internal/auth"
+	"github.com/johnreginald/donewhen/internal/service"
 	"github.com/johnreginald/donewhen/internal/store"
 )
 
@@ -42,12 +43,21 @@ func (s *Server) handlePutHandoff(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Body    string `json:"body"`
 		Summary string `json:"summary"`
+		// Legacy skips the structure checks. Only the import CLI sets it.
+		Legacy bool `json:"legacy"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	h, err := s.svc.SaveHandoff(r.Context(), ws(r), r.PathValue("id"), req.Body, req.Summary, auth.ActorFrom(r.Context()))
+	h, err := s.svc.SaveHandoff(r.Context(), ws(r), r.PathValue("id"), req.Body, req.Summary, auth.ActorFrom(r.Context()), req.Legacy)
+	var fe *service.HandoffFormatError
+	if errors.As(err, &fe) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": fe.Error(), "code": fe.Code, "missing": fe.Missing, "lines": fe.Lines, "chars": fe.Chars,
+		})
+		return
+	}
 	if errors.Is(err, store.ErrInvalidHandoff) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "code": "invalid_handoff"})
 		return
@@ -56,4 +66,10 @@ func (s *Server) handlePutHandoff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, h)
+}
+
+// handleHandoffFormat hands out the template, rules and limits, so the page
+// never keeps its own copy.
+func (s *Server) handleHandoffFormat(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, service.HandoffFormatInfo())
 }

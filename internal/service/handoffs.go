@@ -6,12 +6,26 @@ import (
 	"github.com/johnreginald/donewhen/internal/models"
 )
 
-// SaveHandoff appends a handoff version and writes one activity entry. The
-// entry is best-effort, like the others the service writes.
-func (s *Service) SaveHandoff(ctx context.Context, wsID, initiativeID, body, summary, actor string) (models.Handoff, error) {
+// HandoffSaved is a saved version plus the tickets in its In flight section
+// that are already Done or Canceled (a warning, never a refusal).
+type HandoffSaved struct {
+	models.Handoff
+	DoneTickets []string `json:"done_tickets"`
+}
+
+// SaveHandoff checks the structure of the body, appends a handoff version and
+// writes one activity entry. legacy skips the structure checks: only the
+// import path sets it, for old files. The entry is best-effort, like the
+// others the service writes.
+func (s *Service) SaveHandoff(ctx context.Context, wsID, initiativeID, body, summary, actor string, legacy bool) (HandoffSaved, error) {
+	if !legacy {
+		if err := CheckHandoffFormat(body); err != nil {
+			return HandoffSaved{}, err
+		}
+	}
 	h, err := s.Store.SaveHandoff(ctx, wsID, initiativeID, body, summary, actor)
 	if err != nil {
-		return h, err
+		return HandoffSaved{Handoff: h}, err
 	}
 	title := ""
 	if ini, err := s.Store.GetInitiative(ctx, wsID, initiativeID); err == nil {
@@ -20,5 +34,30 @@ func (s *Service) SaveHandoff(ctx context.Context, wsID, initiativeID, body, sum
 	s.logActivity(ctx, wsID, models.Activity{
 		IssueTitle: title, Actor: h.Actor, Kind: "handoff_saved", Detail: "Handoff updated: " + h.Summary,
 	})
-	return h, nil
+	return HandoffSaved{Handoff: h, DoneTickets: s.HandoffDoneTickets(ctx, wsID, body)}, nil
+}
+
+// HandoffDoneTickets returns the tickets named in the In flight section that
+// are Done or Canceled, looked up in the same workspace. Unknown keys are
+// ignored. Never nil, so it serialises as [].
+func (s *Service) HandoffDoneTickets(ctx context.Context, wsID, body string) []string {
+	out := []string{}
+	cats := map[string]string{}
+	for _, key := range HandoffInFlightKeys(body) {
+		is, err := s.Store.GetIssueByKey(ctx, wsID, key)
+		if err != nil {
+			continue
+		}
+		cat, ok := cats[is.StateID]
+		if !ok {
+			if st, err := s.Store.GetState(ctx, wsID, is.StateID); err == nil {
+				cat = st.Category
+			}
+			cats[is.StateID] = cat
+		}
+		if cat == "completed" || cat == "canceled" {
+			out = append(out, is.Key)
+		}
+	}
+	return out
 }
