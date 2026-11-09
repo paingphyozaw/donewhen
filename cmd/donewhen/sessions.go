@@ -22,8 +22,9 @@ import (
 )
 
 // `donewhen sessions push` (BIZ-278) reads Claude Code transcripts and sends
-// one PUT /api/sessions/{id} per session. It sends numbers and metadata only:
-// the parser decodes nothing but the fields below, so message text, tool
+// each session as PUT /api/sessions/{id}, in chunks of messages. It sends
+// numbers and metadata only: the parser decodes nothing but the fields of
+// transcriptLine (ids, cwd, branch, time, model, usage), so message text, tool
 // input and tool output never reach the request.
 
 const sessionsUsage = `usage:
@@ -36,6 +37,7 @@ env: DONEWHEN_URL, DONEWHEN_TOKEN (or ~/.config/donewhen/token), DONEWHEN_WORKSP
 // transcriptLine is everything the importer reads from one jsonl line.
 type transcriptLine struct {
 	Type      string `json:"type"`
+	UUID      string `json:"uuid"`
 	SessionID string `json:"sessionId"`
 	Cwd       string `json:"cwd"`
 	GitBranch string `json:"gitBranch"`
@@ -44,18 +46,26 @@ type transcriptLine struct {
 		ID    string `json:"id"`
 		Model string `json:"model"`
 		Usage *struct {
-			InputTokens              int64 `json:"input_tokens"`
-			OutputTokens             int64 `json:"output_tokens"`
-			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
-			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+			InputTokens              int64          `json:"input_tokens"`
+			OutputTokens             int64          `json:"output_tokens"`
+			CacheReadInputTokens     int64          `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int64          `json:"cache_creation_input_tokens"`
+			CacheCreation            *cacheCreation `json:"cache_creation"`
 		} `json:"usage"`
 	} `json:"message"`
+}
+
+// cacheCreation is the split of a message's cache writes by cache lifetime.
+type cacheCreation struct {
+	Ephemeral5m int64 `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1h int64 `json:"ephemeral_1h_input_tokens"`
 }
 
 type record struct {
 	line transcriptLine
 	at   time.Time
 	ok   bool // at was parsed
+	any  bool // belongs to the session whatever its sessionId (subagent file)
 }
 
 // readRecords decodes every line it can; a line that is not JSON is skipped.
@@ -80,21 +90,39 @@ func readRecords(r io.Reader) ([]record, error) {
 	}
 }
 
-// parseTranscript sums one session from its main transcript and the
-// transcripts of its subagents (which carry the same sessionId). The session
-// is the one whose id is the file name stem; when no line has that id, it is
-// the first session in the main transcript. Lines of other sessions are
-// ignored. Usage is counted once per message id, since Claude Code writes one
-// line per content block of the same message. ok is false when no assistant
-// message was found.
-func parseTranscript(stem string, main io.Reader, subagents ...io.Reader) (models.AgentSession, bool, error) {
+// cacheWrites splits a message's cache writes into the 5-minute and 1-hour
+// parts. Without the split, the whole write counts as 5-minute.
+func cacheWrites(total int64, split *cacheCreation) (w5, w1 int64) {
+	if split == nil || split.Ephemeral5m+split.Ephemeral1h == 0 {
+		return total, 0
+	}
+	return split.Ephemeral5m, split.Ephemeral1h
+}
+
+// parseTranscript reads one session: its main transcript and the transcripts
+// of its subagents. The session id is the file name stem; when no line of the
+// main transcript has that id, it is the first session in it. Main transcript
+// lines of other sessions are ignored; every subagent line belongs to the
+// session. With whole set, every line of main belongs to the session too (a
+// subagent file pushed on its own, attributed to its parent session).
+//
+// It returns the session's metadata and one entry per message id: Claude Code
+// writes one line per content block of the same message, so usage is taken
+// once, from the last line of the message. ok is false when no model message
+// was found.
+func parseTranscript(stem string, whole bool, main io.Reader, subagents ...io.Reader) (models.AgentSession, []models.SessionMessage, bool, error) {
 	var recs []record
 	for i, r := range append([]io.Reader{main}, subagents...) {
 		got, err := readRecords(r)
 		if err != nil {
-			return models.AgentSession{}, false, err
+			return models.AgentSession{}, nil, false, err
 		}
-		if i == 0 {
+		if i > 0 || whole {
+			for j := range got {
+				got[j].any = true
+			}
+		}
+		if i == 0 && !whole {
 			found := false
 			for _, rec := range got {
 				if rec.line.SessionID == stem {
@@ -110,18 +138,13 @@ func parseTranscript(stem string, main io.Reader, subagents ...io.Reader) (model
 	}
 
 	s := models.AgentSession{ExternalID: stem}
-	type msg struct {
-		model string
-		u     models.SessionUsage
-	}
-	byID := map[string]msg{}
+	byID := map[string]*models.SessionMessage{}
 	var order []string
 	var lastBranchAt time.Time
 	seenKey := map[string]bool{}
-	anon := 0
 	for _, rec := range recs {
 		l := rec.line
-		if l.SessionID != stem {
+		if !rec.any && l.SessionID != stem {
 			continue
 		}
 		if s.ProjectPath == "" && l.Cwd != "" {
@@ -151,86 +174,102 @@ func parseTranscript(stem string, main io.Reader, subagents ...io.Reader) (model
 		}
 		id := l.Message.ID
 		if id == "" {
-			anon++
-			id = fmt.Sprintf("\x00anon-%d", anon)
+			if l.UUID == "" {
+				continue // no stable id: it could not be counted once
+			}
+			id = "line:" + l.UUID
 		}
-		m := msg{model: l.Message.Model}
-		if u := l.Message.Usage; u != nil {
-			m.u = models.SessionUsage{Model: l.Message.Model, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
-				CacheReadTokens: u.CacheReadInputTokens, CacheWriteTokens: u.CacheCreationInputTokens}
-		}
-		if _, seen := byID[id]; !seen {
+		m, seen := byID[id]
+		if !seen {
+			m = &models.SessionMessage{ID: id}
+			if rec.ok {
+				m.At = rec.at
+			}
+			byID[id] = m
 			order = append(order, id)
 		}
-		byID[id] = m // the last line of a message carries its final usage
-	}
-	if len(order) == 0 {
-		return s, false, nil
-	}
-	s.Messages = len(order)
-	sums := map[string]*models.SessionUsage{}
-	var modelsSeen []string
-	for _, id := range order {
-		m := byID[id]
-		u, ok := sums[m.model]
-		if !ok {
-			u = &models.SessionUsage{Model: m.model}
-			sums[m.model] = u
-			modelsSeen = append(modelsSeen, m.model)
+		m.Model = l.Message.Model
+		if u := l.Message.Usage; u != nil { // the last line of a message carries its final usage
+			m.InputTokens, m.OutputTokens, m.CacheReadTokens = u.InputTokens, u.OutputTokens, u.CacheReadInputTokens
+			m.CacheWrite5mTokens, m.CacheWrite1hTokens = cacheWrites(u.CacheCreationInputTokens, u.CacheCreation)
 		}
-		u.InputTokens += m.u.InputTokens
-		u.OutputTokens += m.u.OutputTokens
-		u.CacheReadTokens += m.u.CacheReadTokens
-		u.CacheWriteTokens += m.u.CacheWriteTokens
 	}
-	for _, name := range modelsSeen {
-		s.Usage = append(s.Usage, *sums[name])
+	if len(order) == 0 || s.StartedAt.IsZero() {
+		return s, nil, false, nil
 	}
-	if s.EndedAt.Before(s.StartedAt) || s.StartedAt.IsZero() {
-		return s, false, nil // no usable timestamps
+	msgs := make([]models.SessionMessage, 0, len(order))
+	for _, id := range order {
+		msgs = append(msgs, *byID[id])
 	}
-	return s, true, nil
+	return s, msgs, true, nil
 }
 
 // sessionPayload is the PUT body: the only fields that leave the machine.
 type sessionPayload struct {
-	ProjectPath string                `json:"projectPath"`
-	GitBranch   string                `json:"gitBranch"`
-	IssueKeys   []string              `json:"issueKeys"`
-	StartedAt   time.Time             `json:"startedAt"`
-	EndedAt     time.Time             `json:"endedAt"`
-	Messages    int                   `json:"messages"`
-	Usage       []sessionUsagePayload `json:"usage"`
+	ProjectPath string           `json:"projectPath"`
+	GitBranch   string           `json:"gitBranch"`
+	IssueKeys   []string         `json:"issueKeys"`
+	StartedAt   time.Time        `json:"startedAt"`
+	EndedAt     time.Time        `json:"endedAt"`
+	Messages    []messagePayload `json:"messages"`
 }
 
-type sessionUsagePayload struct {
-	Model            string `json:"model"`
-	InputTokens      int64  `json:"inputTokens"`
-	OutputTokens     int64  `json:"outputTokens"`
-	CacheReadTokens  int64  `json:"cacheReadTokens"`
-	CacheWriteTokens int64  `json:"cacheWriteTokens"`
+// messagePayload is one message's usage. id is Claude's opaque message id.
+type messagePayload struct {
+	ID                 string     `json:"id"`
+	Model              string     `json:"model"`
+	At                 *time.Time `json:"at,omitempty"`
+	InputTokens        int64      `json:"inputTokens"`
+	OutputTokens       int64      `json:"outputTokens"`
+	CacheReadTokens    int64      `json:"cacheReadTokens"`
+	CacheWrite5mTokens int64      `json:"cacheWrite5mTokens"`
+	CacheWrite1hTokens int64      `json:"cacheWrite1hTokens"`
 }
 
-func payloadFor(s models.AgentSession) sessionPayload {
+func payloadFor(s models.AgentSession, msgs []models.SessionMessage) sessionPayload {
 	p := sessionPayload{ProjectPath: s.ProjectPath, GitBranch: s.GitBranch, IssueKeys: s.IssueKeys,
-		StartedAt: s.StartedAt, EndedAt: s.EndedAt, Messages: s.Messages, Usage: []sessionUsagePayload{}}
+		StartedAt: s.StartedAt, EndedAt: s.EndedAt, Messages: []messagePayload{}}
 	if p.IssueKeys == nil {
 		p.IssueKeys = []string{}
 	}
-	for _, u := range s.Usage {
-		p.Usage = append(p.Usage, sessionUsagePayload{Model: u.Model, InputTokens: u.InputTokens,
-			OutputTokens: u.OutputTokens, CacheReadTokens: u.CacheReadTokens, CacheWriteTokens: u.CacheWriteTokens})
+	for _, m := range msgs {
+		mp := messagePayload{ID: m.ID, Model: m.Model, InputTokens: m.InputTokens, OutputTokens: m.OutputTokens,
+			CacheReadTokens: m.CacheReadTokens, CacheWrite5mTokens: m.CacheWrite5mTokens, CacheWrite1hTokens: m.CacheWrite1hTokens}
+		if !m.At.IsZero() {
+			at := m.At
+			mp.At = &at
+		}
+		p.Messages = append(p.Messages, mp)
 	}
 	return p
 }
+
+// pushChunkSize is how many messages one PUT carries, so a long session stays
+// under the server's body size limit. A variable so tests can make it small.
+var pushChunkSize = 2000
 
 type pushClient struct {
 	base, token, workspace string
 	http                   *http.Client
 }
 
-func (c pushClient) put(ctx context.Context, s models.AgentSession) (models.AgentSession, error) {
-	body, err := json.Marshal(payloadFor(s))
+// push sends a session in chunks of pushChunkSize messages and returns the
+// server's view after the last one. A PUT is additive on the server, so the
+// chunks add up to one push.
+func (c pushClient) push(ctx context.Context, s models.AgentSession, msgs []models.SessionMessage) (models.AgentSession, error) {
+	var saved models.AgentSession
+	for start := 0; start < len(msgs); start += pushChunkSize {
+		end := min(start+pushChunkSize, len(msgs))
+		var err error
+		if saved, err = c.put(ctx, s, msgs[start:end]); err != nil {
+			return saved, err
+		}
+	}
+	return saved, nil
+}
+
+func (c pushClient) put(ctx context.Context, s models.AgentSession, msgs []models.SessionMessage) (models.AgentSession, error) {
+	body, err := json.Marshal(payloadFor(s, msgs))
 	if err != nil {
 		return models.AgentSession{}, err
 	}
@@ -260,13 +299,14 @@ func (c pushClient) put(ctx context.Context, s models.AgentSession) (models.Agen
 	return saved, nil
 }
 
-// transcript is one main transcript file and its subagent files.
+// transcript is one session's files: a main transcript and its subagent
+// transcripts, or a single subagent file pushed on its own.
 type transcript struct {
 	main      string
 	subagents []string
+	session   string // the session id the files belong to
+	whole     bool   // main is a subagent file: all its lines belong to session
 }
-
-func (t transcript) stem() string { return strings.TrimSuffix(filepath.Base(t.main), ".jsonl") }
 
 func (t transcript) lastChanged() time.Time {
 	var last time.Time
@@ -278,14 +318,43 @@ func (t transcript) lastChanged() time.Time {
 	return last
 }
 
-func transcriptAt(path string) transcript {
-	subs, _ := filepath.Glob(filepath.Join(strings.TrimSuffix(path, ".jsonl"), "subagents", "*.jsonl"))
-	sort.Strings(subs)
-	return transcript{main: path, subagents: subs}
+// subagentFiles lists the subagent transcripts of a session, at any depth
+// under <session>/subagents (also workflows/wf_*/). Only agent-*.jsonl files
+// are transcripts; journal.jsonl and other files are not.
+func subagentFiles(mainPath string) []string {
+	root := filepath.Join(strings.TrimSuffix(mainPath, ".jsonl"), "subagents")
+	var out []string
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // a missing or unreadable folder: no subagents
+		}
+		name := d.Name()
+		if !d.IsDir() && strings.HasPrefix(name, "agent-") && strings.HasSuffix(name, ".jsonl") {
+			out = append(out, p)
+		}
+		return nil
+	})
+	sort.Strings(out)
+	return out
 }
 
-// findTranscripts walks dir for main transcripts; files under a subagents
-// folder belong to their parent session and are read with it.
+// transcriptAt reads a path given with --file. A file under
+// <session>/subagents/ is a subagent transcript: it is sent on its own,
+// attributed to its parent session.
+func transcriptAt(path string) transcript {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	for i := len(parts) - 2; i >= 1; i-- {
+		if parts[i] == "subagents" {
+			return transcript{main: path, session: parts[i-1], whole: true}
+		}
+	}
+	return transcript{main: path, subagents: subagentFiles(path),
+		session: strings.TrimSuffix(filepath.Base(path), ".jsonl")}
+}
+
+// findTranscripts walks dir for main transcripts, oldest first, so a session
+// that was resumed later never takes the messages its first session sent.
+// Files under a subagents folder belong to their parent session.
 func findTranscripts(dir string) ([]transcript, error) {
 	var out []transcript
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
@@ -303,10 +372,15 @@ func findTranscripts(dir string) ([]transcript, error) {
 		}
 		return nil
 	})
+	changed := make(map[string]time.Time, len(out))
+	for _, t := range out {
+		changed[t.main] = t.lastChanged()
+	}
+	sort.SliceStable(out, func(i, j int) bool { return changed[out[i].main].Before(changed[out[j].main]) })
 	return out, err
 }
 
-func readTranscript(t transcript) (models.AgentSession, bool, error) {
+func readTranscript(t transcript) (models.AgentSession, []models.SessionMessage, bool, error) {
 	var files []*os.File
 	defer func() {
 		for _, f := range files {
@@ -317,12 +391,12 @@ func readTranscript(t transcript) (models.AgentSession, bool, error) {
 	for _, p := range append([]string{t.main}, t.subagents...) {
 		f, err := os.Open(p)
 		if err != nil {
-			return models.AgentSession{}, false, err
+			return models.AgentSession{}, nil, false, err
 		}
 		files = append(files, f)
 		readers = append(readers, f)
 	}
-	return parseTranscript(t.stem(), readers[0], readers[1:]...)
+	return parseTranscript(t.session, t.whole, readers[0], readers[1:]...)
 }
 
 func readTokenFile(env func(string) string) string {
@@ -401,7 +475,7 @@ func runSessions(args []string, env func(string) string, stdout, stderr io.Write
 	failed := false
 	ctx := context.Background()
 	for _, t := range list {
-		s, ok, err := readTranscript(t)
+		s, msgs, ok, err := readTranscript(t)
 		if err != nil {
 			fmt.Fprintf(stderr, "failed %s: %v\n", t.main, err)
 			failed = true
@@ -410,7 +484,7 @@ func runSessions(args []string, env func(string) string, stdout, stderr io.Write
 		if !ok {
 			continue // nothing a model said: nothing to record
 		}
-		saved, err := client.put(ctx, s)
+		saved, err := client.push(ctx, s, msgs)
 		if err != nil {
 			fmt.Fprintf(stderr, "failed %s: %v\n", s.ExternalID, err)
 			failed = true
