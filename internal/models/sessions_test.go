@@ -28,7 +28,7 @@ func TestIssueKeysFromBranch(t *testing.T) {
 
 func TestPriceFor(t *testing.T) {
 	p, ok := PriceFor("claude-opus-5-5")
-	if !ok || p.Input != 4 || p.Output != 20 {
+	if !ok || p.Input != 4 || p.Output != 20 || p.CacheRead != 0.20 {
 		t.Fatalf("opus 5.5 = %+v %v", p, ok)
 	}
 	// The longest prefix wins: fable-5-1 is not priced as fable-5.
@@ -48,18 +48,24 @@ func TestPriceFor(t *testing.T) {
 	}
 }
 
-func TestSessionUsageCost(t *testing.T) {
-	u := SessionUsage{Model: "claude-opus-5-5", InputTokens: 1_000_000, OutputTokens: 1_000_000,
-		CacheReadTokens: 1_000_000, CacheWriteTokens: 1_000_000}
-	p, _ := PriceFor(u.Model)
-	want := p.Input + p.Output + p.CacheRead + p.CacheWrite
-	if got := UsageCost(u); math.Abs(got-want) > 1e-9 {
-		t.Fatalf("cost = %v, want %v", got, want)
+func TestMessageCost(t *testing.T) {
+	// Opus 5.5: input $4, output $20, cache read $0.20, 5m write $5, 1h write $8.
+	m := SessionMessage{Model: "claude-opus-5-5", InputTokens: 1_000_000, OutputTokens: 1_000_000,
+		CacheReadTokens: 1_000_000, CacheWrite5mTokens: 1_000_000, CacheWrite1hTokens: 1_000_000}
+	if got := MessageCost(m); math.Abs(got-37.2) > 1e-9 {
+		t.Fatalf("cost = %v, want 37.2", got)
 	}
-	if got := UsageCost(SessionUsage{Model: "mystery", InputTokens: 5_000_000}); got != 0 {
+	if got := MessageCost(SessionMessage{Model: "claude-opus-5-5", CacheWrite5mTokens: 1_000_000}); math.Abs(got-5) > 1e-9 {
+		t.Fatalf("5m write = %v, want 5", got)
+	}
+	if got := MessageCost(SessionMessage{Model: "claude-opus-5-5", CacheWrite1hTokens: 1_000_000}); math.Abs(got-8) > 1e-9 {
+		t.Fatalf("1h write = %v, want 8", got)
+	}
+	if got := MessageCost(SessionMessage{Model: "mystery", InputTokens: 5_000_000}); got != 0 {
 		t.Fatalf("unknown model cost = %v, want 0", got)
 	}
-	if got := u.Tokens(); got != 4_000_000 {
+	u := SessionUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, CacheWriteTokens: 4}
+	if got := u.Tokens(); got != 10 {
 		t.Fatalf("tokens = %d", got)
 	}
 }

@@ -16,24 +16,28 @@ import (
 // Agent sessions (BIZ-278): Claude Code sessions with their token usage.
 // `donewhen sessions push` saves them; the GETs read them for the workspace.
 
-// sessionReq is the PUT body. Unknown fields are refused, so a client cannot
-// send message text along by mistake.
+// sessionReq is the PUT body: one push of a session. Unknown fields are
+// refused, so a client cannot send message text along by mistake.
 type sessionReq struct {
-	ProjectPath string            `json:"projectPath"`
-	GitBranch   string            `json:"gitBranch"`
-	IssueKeys   []string          `json:"issueKeys"`
-	StartedAt   time.Time         `json:"startedAt"`
-	EndedAt     time.Time         `json:"endedAt"`
-	Messages    int               `json:"messages"`
-	Usage       []sessionUsageReq `json:"usage"`
+	ProjectPath string              `json:"projectPath"`
+	GitBranch   string              `json:"gitBranch"`
+	IssueKeys   []string            `json:"issueKeys"`
+	StartedAt   time.Time           `json:"startedAt"`
+	EndedAt     time.Time           `json:"endedAt"`
+	Messages    []sessionMessageReq `json:"messages"`
 }
 
-type sessionUsageReq struct {
-	Model            string `json:"model"`
-	InputTokens      int64  `json:"inputTokens"`
-	OutputTokens     int64  `json:"outputTokens"`
-	CacheReadTokens  int64  `json:"cacheReadTokens"`
-	CacheWriteTokens int64  `json:"cacheWriteTokens"`
+// sessionMessageReq is the usage of one model response; id is the opaque
+// message id from the transcript.
+type sessionMessageReq struct {
+	ID                 string    `json:"id"`
+	Model              string    `json:"model"`
+	At                 time.Time `json:"at"`
+	InputTokens        int64     `json:"inputTokens"`
+	OutputTokens       int64     `json:"outputTokens"`
+	CacheReadTokens    int64     `json:"cacheReadTokens"`
+	CacheWrite5mTokens int64     `json:"cacheWrite5mTokens"`
+	CacheWrite1hTokens int64     `json:"cacheWrite1hTokens"`
 }
 
 func writeInvalidSession(w http.ResponseWriter, msg string) {
@@ -53,15 +57,15 @@ func (s *Server) handlePutSession(w http.ResponseWriter, r *http.Request) {
 		IssueKeys:   req.IssueKeys,
 		StartedAt:   req.StartedAt,
 		EndedAt:     req.EndedAt,
-		Messages:    req.Messages,
 	}
-	for _, u := range req.Usage {
-		in.Usage = append(in.Usage, models.SessionUsage{
-			Model: u.Model, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
-			CacheReadTokens: u.CacheReadTokens, CacheWriteTokens: u.CacheWriteTokens,
+	msgs := make([]models.SessionMessage, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		msgs = append(msgs, models.SessionMessage{
+			ID: m.ID, Model: m.Model, At: m.At, InputTokens: m.InputTokens, OutputTokens: m.OutputTokens,
+			CacheReadTokens: m.CacheReadTokens, CacheWrite5mTokens: m.CacheWrite5mTokens, CacheWrite1hTokens: m.CacheWrite1hTokens,
 		})
 	}
-	saved, err := s.svc.SaveSession(r.Context(), ws(r), in, auth.ActorFrom(r.Context()))
+	saved, err := s.svc.SaveSession(r.Context(), ws(r), in, msgs, auth.ActorFrom(r.Context()))
 	if errors.Is(err, store.ErrInvalid) {
 		writeInvalidSession(w, strings.TrimPrefix(err.Error(), "invalid: "))
 		return

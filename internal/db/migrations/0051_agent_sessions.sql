@@ -20,15 +20,37 @@ CREATE TABLE ai_sessions (
 CREATE INDEX ai_sessions_started_idx ON ai_sessions (workspace_id, started_at DESC);
 CREATE INDEX ai_sessions_issue_keys_idx ON ai_sessions USING gin (issue_keys);
 
--- One row per session and model. cost_usd is fixed when the session is saved,
--- so a later price change does not rewrite old sessions.
+-- One row per model response. A message id is unique per workspace: the first
+-- session that sends it keeps it, so a resumed session that repeats earlier
+-- lines never counts them again. cost_usd is fixed when the row is saved, so
+-- a later price change does not rewrite old sessions.
+CREATE TABLE ai_session_messages (
+    workspace_id          uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    message_id            text NOT NULL CHECK (char_length(message_id) BETWEEN 1 AND 200),
+    session_id            uuid NOT NULL REFERENCES ai_sessions(id) ON DELETE CASCADE,
+    model                 text NOT NULL CHECK (char_length(model) BETWEEN 1 AND 100),
+    input_tokens          bigint NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+    output_tokens         bigint NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+    cache_read_tokens     bigint NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0),
+    cache_write_5m_tokens bigint NOT NULL DEFAULT 0 CHECK (cache_write_5m_tokens >= 0),
+    cache_write_1h_tokens bigint NOT NULL DEFAULT 0 CHECK (cache_write_1h_tokens >= 0),
+    cost_usd              numeric(14,6) NOT NULL DEFAULT 0,
+    at                    timestamptz,
+    UNIQUE (workspace_id, message_id)
+);
+CREATE INDEX ai_session_messages_session_idx ON ai_session_messages (session_id);
+
+-- Per session and model sums of ai_session_messages, rebuilt on every save.
+-- cache_write_tokens is the sum of the 5-minute and 1-hour writes.
 CREATE TABLE ai_session_usage (
-    session_id         uuid NOT NULL REFERENCES ai_sessions(id) ON DELETE CASCADE,
-    model              text NOT NULL CHECK (char_length(model) BETWEEN 1 AND 100),
-    input_tokens       bigint NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
-    output_tokens      bigint NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
-    cache_read_tokens  bigint NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0),
-    cache_write_tokens bigint NOT NULL DEFAULT 0 CHECK (cache_write_tokens >= 0),
-    cost_usd           numeric(12,4) NOT NULL DEFAULT 0,
+    session_id            uuid NOT NULL REFERENCES ai_sessions(id) ON DELETE CASCADE,
+    model                 text NOT NULL CHECK (char_length(model) BETWEEN 1 AND 100),
+    input_tokens          bigint NOT NULL DEFAULT 0,
+    output_tokens         bigint NOT NULL DEFAULT 0,
+    cache_read_tokens     bigint NOT NULL DEFAULT 0,
+    cache_write_tokens    bigint NOT NULL DEFAULT 0,
+    cache_write_5m_tokens bigint NOT NULL DEFAULT 0,
+    cache_write_1h_tokens bigint NOT NULL DEFAULT 0,
+    cost_usd              numeric(14,6) NOT NULL DEFAULT 0,
     PRIMARY KEY (session_id, model)
 );

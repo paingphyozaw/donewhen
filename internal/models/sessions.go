@@ -24,13 +24,31 @@ type AgentSession struct {
 }
 
 // SessionUsage is one model's token sums within a session.
+// CacheWriteTokens is the sum of the 5-minute and 1-hour cache writes.
 type SessionUsage struct {
-	Model            string  `json:"model"`
-	InputTokens      int64   `json:"inputTokens"`
-	OutputTokens     int64   `json:"outputTokens"`
-	CacheReadTokens  int64   `json:"cacheReadTokens"`
-	CacheWriteTokens int64   `json:"cacheWriteTokens"`
-	CostUSD          float64 `json:"costUsd"`
+	Model              string  `json:"model"`
+	InputTokens        int64   `json:"inputTokens"`
+	OutputTokens       int64   `json:"outputTokens"`
+	CacheReadTokens    int64   `json:"cacheReadTokens"`
+	CacheWriteTokens   int64   `json:"cacheWriteTokens"`
+	CacheWrite5mTokens int64   `json:"cacheWrite5mTokens"`
+	CacheWrite1hTokens int64   `json:"cacheWrite1hTokens"`
+	CostUSD            float64 `json:"costUsd"`
+}
+
+// SessionMessage is the usage of one model response. Message ids are unique
+// per workspace: the first session that sends an id owns it, so a resumed
+// session that repeats earlier lines never counts them twice.
+type SessionMessage struct {
+	ID                 string    `json:"id"`
+	Model              string    `json:"model"`
+	At                 time.Time `json:"at"`
+	InputTokens        int64     `json:"inputTokens"`
+	OutputTokens       int64     `json:"outputTokens"`
+	CacheReadTokens    int64     `json:"cacheReadTokens"`
+	CacheWrite5mTokens int64     `json:"cacheWrite5mTokens"`
+	CacheWrite1hTokens int64     `json:"cacheWrite1hTokens"`
+	CostUSD            float64   `json:"costUsd"`
 }
 
 // Tokens is the sum of the four counts.

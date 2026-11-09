@@ -30,10 +30,18 @@ const (
 	maxSessionLimit     = 500
 )
 
-// UpsertSession saves a session by its external id. Saving the same session
-// again replaces its fields and its usage rows, so a re-sent transcript never
-// doubles the numbers. The caller sets each usage row's cost.
-func (s *Store) UpsertSession(ctx context.Context, wsID string, in models.AgentSession) (models.AgentSession, error) {
+// SaveSession adds one push of a session: it merges the session's metadata,
+// adds the messages no session of the workspace holds yet, then rebuilds the
+// session's usage rows, message count and time range from the messages it
+// holds. A message id another session (or an earlier push) already sent is
+// skipped, so a push is additive and sending it again changes nothing. The
+// caller sets each message's cost.
+//
+// Metadata merge: the earliest start and latest end, the union of ticket
+// keys, the first non-empty project path, and the branch of the push whose
+// end is latest. Once the session holds messages, its start and end are the
+// times of its first and last message.
+func (s *Store) SaveSession(ctx context.Context, wsID string, in models.AgentSession, msgs []models.SessionMessage) (models.AgentSession, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return models.AgentSession{}, err
@@ -46,27 +54,68 @@ func (s *Store) UpsertSession(ctx context.Context, wsID string, in models.AgentS
 	}
 	var id string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO ai_sessions (workspace_id, external_id, project_path, git_branch, issue_keys, started_at, ended_at, messages)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		INSERT INTO ai_sessions AS s (workspace_id, external_id, project_path, git_branch, issue_keys, started_at, ended_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
 		ON CONFLICT (workspace_id, external_id) DO UPDATE SET
-			project_path=EXCLUDED.project_path, git_branch=EXCLUDED.git_branch, issue_keys=EXCLUDED.issue_keys,
-			started_at=EXCLUDED.started_at, ended_at=EXCLUDED.ended_at, messages=EXCLUDED.messages, updated_at=now()
+			project_path = CASE WHEN s.project_path = '' THEN EXCLUDED.project_path ELSE s.project_path END,
+			git_branch = CASE WHEN EXCLUDED.git_branch <> '' AND (s.git_branch = '' OR EXCLUDED.ended_at >= s.ended_at)
+				THEN EXCLUDED.git_branch ELSE s.git_branch END,
+			issue_keys = ARRAY(SELECT DISTINCT k FROM unnest(s.issue_keys || EXCLUDED.issue_keys) AS k ORDER BY k),
+			started_at = LEAST(s.started_at, EXCLUDED.started_at),
+			ended_at = GREATEST(s.ended_at, EXCLUDED.ended_at),
+			updated_at = now()
 		RETURNING id`,
-		wsID, in.ExternalID, in.ProjectPath, in.GitBranch, keys, in.StartedAt, in.EndedAt, in.Messages,
+		wsID, in.ExternalID, in.ProjectPath, in.GitBranch, keys, in.StartedAt, in.EndedAt,
 	).Scan(&id)
 	if err != nil {
 		return models.AgentSession{}, err
 	}
+
+	if len(msgs) > 0 {
+		n := len(msgs)
+		ids, mdl := make([]string, n), make([]string, n)
+		at := make([]*time.Time, n)
+		inTok, outTok, cr, w5, w1 := make([]int64, n), make([]int64, n), make([]int64, n), make([]int64, n), make([]int64, n)
+		cost := make([]float64, n)
+		for i, m := range msgs {
+			ids[i], mdl[i] = m.ID, m.Model
+			if !m.At.IsZero() {
+				t := m.At
+				at[i] = &t
+			}
+			inTok[i], outTok[i], cr[i], w5[i], w1[i] = m.InputTokens, m.OutputTokens, m.CacheReadTokens, m.CacheWrite5mTokens, m.CacheWrite1hTokens
+			cost[i] = m.CostUSD
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO ai_session_messages (workspace_id, session_id, message_id, model, at, input_tokens, output_tokens,
+				cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, cost_usd)
+			SELECT $1, $2, m.id, m.model, m.at, m.i, m.o, m.cr, m.w5, m.w1, m.cost::numeric(14,6)
+			FROM unnest($3::text[], $4::text[], $5::timestamptz[], $6::bigint[], $7::bigint[], $8::bigint[], $9::bigint[],
+				$10::bigint[], $11::float8[]) AS m(id, model, at, i, o, cr, w5, w1, cost)
+			ON CONFLICT (workspace_id, message_id) DO NOTHING`,
+			wsID, id, ids, mdl, at, inTok, outTok, cr, w5, w1, cost); err != nil {
+			return models.AgentSession{}, err
+		}
+	}
+
 	if _, err := tx.Exec(ctx, `DELETE FROM ai_session_usage WHERE session_id=$1`, id); err != nil {
 		return models.AgentSession{}, err
 	}
-	for _, u := range in.Usage {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO ai_session_usage (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd)
-			VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-			id, u.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.CostUSD); err != nil {
-			return models.AgentSession{}, err
-		}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO ai_session_usage (session_id, model, input_tokens, output_tokens, cache_read_tokens,
+			cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens, cost_usd)
+		SELECT session_id, model, sum(input_tokens), sum(output_tokens), sum(cache_read_tokens),
+			sum(cache_write_5m_tokens + cache_write_1h_tokens), sum(cache_write_5m_tokens), sum(cache_write_1h_tokens), sum(cost_usd)
+		FROM ai_session_messages WHERE session_id=$1 GROUP BY session_id, model`, id); err != nil {
+		return models.AgentSession{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE ai_sessions s SET messages = m.n,
+			started_at = coalesce(m.first_at, s.started_at), ended_at = coalesce(m.last_at, s.ended_at)
+		FROM (SELECT count(*) AS n, min(at) AS first_at, max(at) AS last_at
+			FROM ai_session_messages WHERE session_id=$1) m
+		WHERE s.id=$1`, id); err != nil {
+		return models.AgentSession{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return models.AgentSession{}, err
@@ -160,7 +209,8 @@ func (s *Store) listSessions(ctx context.Context, wsID, where string, args []any
 		return out, nil
 	}
 	urows, err := s.pool.Query(ctx, `
-		SELECT session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd::float8
+		SELECT session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+			cache_write_5m_tokens, cache_write_1h_tokens, cost_usd::float8
 		FROM ai_session_usage WHERE session_id = ANY($1::uuid[]) ORDER BY cost_usd DESC, model`, ids)
 	if err != nil {
 		return nil, err
@@ -170,7 +220,7 @@ func (s *Store) listSessions(ctx context.Context, wsID, where string, args []any
 		var sid string
 		var u models.SessionUsage
 		if err := urows.Scan(&sid, &u.Model, &u.InputTokens, &u.OutputTokens, &u.CacheReadTokens,
-			&u.CacheWriteTokens, &u.CostUSD); err != nil {
+			&u.CacheWriteTokens, &u.CacheWrite5mTokens, &u.CacheWrite1hTokens, &u.CostUSD); err != nil {
 			return nil, err
 		}
 		a := &out[index[sid]]

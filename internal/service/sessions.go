@@ -17,7 +17,8 @@ const (
 	maxSessionPath       = 1000
 	maxSessionBranch     = 300
 	maxSessionModel      = 100
-	maxSessionUsageRows  = 50
+	maxSessionMessages   = 5000 // per push; the importer sends 2,000
+	maxSessionMessageID  = 200
 	maxSessionIssueKeys  = 100
 )
 
@@ -27,18 +28,19 @@ func invalidSession(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", store.ErrInvalid, fmt.Sprintf(format, args...))
 }
 
-// SaveSession checks a session, adds the ticket keys its branch names, prices
-// each usage row with the current price table and saves it, replacing an
-// earlier save of the same session. It publishes session.saved and writes no
+// SaveSession checks one push of a session, adds the ticket keys its branch
+// names, prices each message with the current price table and saves it. A
+// push is additive: messages already saved (by this or any other session of
+// the workspace) are skipped. It publishes session.saved and writes no
 // activity entry: sessions are noise in the Log.
-func (s *Service) SaveSession(ctx context.Context, wsID string, in models.AgentSession, actor string) (models.AgentSession, error) {
-	if err := cleanSession(&in); err != nil {
+func (s *Service) SaveSession(ctx context.Context, wsID string, in models.AgentSession, msgs []models.SessionMessage, actor string) (models.AgentSession, error) {
+	if err := cleanSession(&in, msgs); err != nil {
 		return models.AgentSession{}, err
 	}
-	for i := range in.Usage {
-		in.Usage[i].CostUSD = models.UsageCost(in.Usage[i])
+	for i := range msgs {
+		msgs[i].CostUSD = models.MessageCost(msgs[i])
 	}
-	saved, err := s.Store.UpsertSession(ctx, wsID, in)
+	saved, err := s.Store.SaveSession(ctx, wsID, in, msgs)
 	if err != nil {
 		return saved, err
 	}
@@ -52,7 +54,7 @@ func (s *Service) SaveSession(ctx context.Context, wsID string, in models.AgentS
 }
 
 // cleanSession validates a session in place. Every error wraps store.ErrInvalid.
-func cleanSession(in *models.AgentSession) error {
+func cleanSession(in *models.AgentSession, msgs []models.SessionMessage) error {
 	in.ExternalID = strings.TrimSpace(in.ExternalID)
 	if n := utf8.RuneCountInString(in.ExternalID); n < 1 || n > maxSessionExternalID {
 		return invalidSession("session id must be 1-%d characters", maxSessionExternalID)
@@ -69,10 +71,6 @@ func cleanSession(in *models.AgentSession) error {
 	if in.EndedAt.Before(in.StartedAt) {
 		return invalidSession("endedAt is before startedAt")
 	}
-	if in.Messages < 0 {
-		return invalidSession("messages must not be negative")
-	}
-
 	keys := []string{}
 	seen := map[string]bool{}
 	for _, k := range append(append([]string{}, in.IssueKeys...), models.IssueKeysFromBranch(in.GitBranch)...) {
@@ -90,19 +88,23 @@ func cleanSession(in *models.AgentSession) error {
 	}
 	in.IssueKeys = keys
 
-	if len(in.Usage) > maxSessionUsageRows {
-		return invalidSession("too many usage rows")
+	if len(msgs) > maxSessionMessages {
+		return invalidSession("at most %d messages per request", maxSessionMessages)
 	}
-	seenModel := map[string]bool{}
-	for _, u := range in.Usage {
-		if n := utf8.RuneCountInString(u.Model); n < 1 || n > maxSessionModel {
+	seenID := map[string]bool{}
+	for _, m := range msgs {
+		if n := utf8.RuneCountInString(m.ID); n < 1 || n > maxSessionMessageID {
+			return invalidSession("message id must be 1-%d characters", maxSessionMessageID)
+		}
+		if seenID[m.ID] {
+			return invalidSession("message %q is listed twice", m.ID)
+		}
+		seenID[m.ID] = true
+		if n := utf8.RuneCountInString(m.Model); n < 1 || n > maxSessionModel {
 			return invalidSession("model must be 1-%d characters", maxSessionModel)
 		}
-		if seenModel[u.Model] {
-			return invalidSession("model %q is listed twice", u.Model)
-		}
-		seenModel[u.Model] = true
-		if u.InputTokens < 0 || u.OutputTokens < 0 || u.CacheReadTokens < 0 || u.CacheWriteTokens < 0 {
+		if m.InputTokens < 0 || m.OutputTokens < 0 || m.CacheReadTokens < 0 ||
+			m.CacheWrite5mTokens < 0 || m.CacheWrite1hTokens < 0 {
 			return invalidSession("token counts must not be negative")
 		}
 	}
