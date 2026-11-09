@@ -20,6 +20,7 @@
 	import PageHeader from '$components/PageHeader.svelte';
 	import Tick from '$components/Tick.svelte';
 	import { rel } from '$lib/format.js';
+	import { sessionsLine, query } from '$lib/sessions.js';
 
 	let issue = $state(null);
 	let notFound = $state(false);
@@ -31,6 +32,7 @@
 	let parent = $state(null);
 	let criteria = $state([]);
 	let commits = $state([]);
+	let sessionRow = $state(null); // this issue's row of the sessions summary, or null
 	let newCrit = $state('');
 	const doneCrit = $derived(criteria.filter((c) => c.done).length);
 	// judgment criteria are advisory — shown, but never the reason a move is blocked.
@@ -115,6 +117,7 @@
 		loading = true;
 		notFound = false;
 		issue = null;
+		sessionRow = null;
 		confirmDel = false;
 		editingDesc = false;
 		editingTitle = false;
@@ -157,15 +160,18 @@
 			iss.childCount > 0 ? api.issues({ parent: iss.key }) : Promise.resolve([]),
 			iss.parentKey ? api.issue(iss.parentKey) : Promise.resolve(null),
 			api.criteria(iss.id),
-			api.commits(iss.id)
+			api.commits(iss.id),
+			api.sessionSummary(query({ group: 'issue', issue: iss.key }))
 		]);
 		if (seq !== loadSeq) return; // stale: this issue is no longer the one on screen
-		const [d, c, p, cr, co] = results;
+		const [d, c, p, cr, co, se] = results;
 		docs = d.status === 'fulfilled' ? d.value || [] : [];
 		children = c.status === 'fulfilled' ? c.value || [] : [];
 		parent = p.status === 'fulfilled' ? p.value : null;
 		criteria = cr.status === 'fulfilled' ? cr.value || [] : [];
 		commits = co.status === 'fulfilled' ? co.value || [] : [];
+		// Optional: a server without sessions (or none for this issue) just shows no line.
+		sessionRow = se.status === 'fulfilled' ? (se.value || []).find((r) => r.key === iss.key) || null : null;
 		const failed = [['documents', d], ['sub-issues', c], ['parent', p], ['done-when', cr], ['commits', co]]
 			.filter(([, r]) => r.status === 'rejected')
 			.map(([n]) => n);
@@ -692,6 +698,10 @@
 						</section>
 					{/if}
 
+					{#if sessionsLine(sessionRow)}
+						<a class="sessions-line" href="/sessions?issue={issue.key}">{sessionsLine(sessionRow)}</a>
+					{/if}
+
 					{#if docs.length}
 						<section class="block">
 							<div class="bh"><h2>Documents</h2><span class="n">{docs.length}</span></div>
@@ -1187,6 +1197,17 @@
 	}
 	.crit-add {
 		margin-top: 8px;
+	}
+	.sessions-line {
+		display: block;
+		margin: -4px 0 18px;
+		font-size: var(--t-sm);
+		color: var(--ink-2);
+		font-variant-numeric: tabular-nums;
+		text-decoration: none;
+	}
+	.sessions-line:hover {
+		color: var(--accent);
 	}
 	.dev-row {
 		display: flex;
