@@ -36,13 +36,16 @@ type SessionUsage struct {
 	CostUSD            float64 `json:"costUsd"`
 }
 
-// SessionMessage is the usage of one model response. Message ids are unique
+// SessionMessage is the usage of one model response, with the branch it was
+// made on. Message ids are unique
 // per workspace: the first session that sends an id owns it, so a resumed
 // session that repeats earlier lines never counts them twice.
 type SessionMessage struct {
 	ID                 string    `json:"id"`
 	Model              string    `json:"model"`
 	At                 time.Time `json:"at"`
+	Branch             string    `json:"branch"`             // gitBranch of the message's line
+	IssueKey           string    `json:"issueKey,omitempty"` // set by the server from Branch
 	InputTokens        int64     `json:"inputTokens"`
 	OutputTokens       int64     `json:"outputTokens"`
 	CacheReadTokens    int64     `json:"cacheReadTokens"`

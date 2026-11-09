@@ -39,6 +39,10 @@ func (s *Service) SaveSession(ctx context.Context, wsID string, in models.AgentS
 	}
 	for i := range msgs {
 		msgs[i].CostUSD = models.MessageCost(msgs[i])
+		msgs[i].IssueKey = ""
+		if keys := models.IssueKeysFromBranch(msgs[i].Branch); len(keys) > 0 {
+			msgs[i].IssueKey = keys[0]
+		}
 	}
 	saved, err := s.Store.SaveSession(ctx, wsID, in, msgs)
 	if err != nil {
@@ -100,6 +104,9 @@ func cleanSession(in *models.AgentSession, msgs []models.SessionMessage) error {
 			return invalidSession("message %q is listed twice", m.ID)
 		}
 		seenID[m.ID] = true
+		if utf8.RuneCountInString(m.Branch) > maxSessionBranch {
+			return invalidSession("message branch is too long")
+		}
 		if n := utf8.RuneCountInString(m.Model); n < 1 || n > maxSessionModel {
 			return invalidSession("model must be 1-%d characters", maxSessionModel)
 		}

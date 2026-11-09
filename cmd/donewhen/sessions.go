@@ -185,6 +185,9 @@ func parseTranscript(stem string, whole bool, main io.Reader, subagents ...io.Re
 			if rec.ok {
 				m.At = rec.at
 			}
+			if l.GitBranch != "HEAD" {
+				m.Branch = l.GitBranch
+			}
 			byID[id] = m
 			order = append(order, id)
 		}
@@ -219,6 +222,7 @@ type messagePayload struct {
 	ID                 string     `json:"id"`
 	Model              string     `json:"model"`
 	At                 *time.Time `json:"at,omitempty"`
+	Branch             string     `json:"branch"` // the line's gitBranch: which ticket the message counts for
 	InputTokens        int64      `json:"inputTokens"`
 	OutputTokens       int64      `json:"outputTokens"`
 	CacheReadTokens    int64      `json:"cacheReadTokens"`
@@ -233,7 +237,7 @@ func payloadFor(s models.AgentSession, msgs []models.SessionMessage) sessionPayl
 		p.IssueKeys = []string{}
 	}
 	for _, m := range msgs {
-		mp := messagePayload{ID: m.ID, Model: m.Model, InputTokens: m.InputTokens, OutputTokens: m.OutputTokens,
+		mp := messagePayload{ID: m.ID, Model: m.Model, Branch: m.Branch, InputTokens: m.InputTokens, OutputTokens: m.OutputTokens,
 			CacheReadTokens: m.CacheReadTokens, CacheWrite5mTokens: m.CacheWrite5mTokens, CacheWrite1hTokens: m.CacheWrite1hTokens}
 		if !m.At.IsZero() {
 			at := m.At

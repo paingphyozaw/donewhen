@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/johnreginald/donewhen/internal/models"
@@ -40,7 +41,8 @@ const (
 // Metadata merge: the earliest start and latest end, the union of ticket
 // keys, the first non-empty project path, and the branch of the push whose
 // end is latest. Once the session holds messages, its start and end are the
-// times of its first and last message.
+// times of its first and last message, and its ticket keys are the keys of
+// its messages' branches.
 func (s *Store) SaveSession(ctx context.Context, wsID string, in models.AgentSession, msgs []models.SessionMessage) (models.AgentSession, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -75,6 +77,7 @@ func (s *Store) SaveSession(ctx context.Context, wsID string, in models.AgentSes
 		n := len(msgs)
 		ids, mdl := make([]string, n), make([]string, n)
 		at := make([]*time.Time, n)
+		branch, key := make([]string, n), make([]*string, n)
 		inTok, outTok, cr, w5, w1 := make([]int64, n), make([]int64, n), make([]int64, n), make([]int64, n), make([]int64, n)
 		cost := make([]float64, n)
 		for i, m := range msgs {
@@ -83,18 +86,23 @@ func (s *Store) SaveSession(ctx context.Context, wsID string, in models.AgentSes
 				t := m.At
 				at[i] = &t
 			}
+			branch[i] = m.Branch
+			if m.IssueKey != "" {
+				k := m.IssueKey
+				key[i] = &k
+			}
 			inTok[i], outTok[i], cr[i], w5[i], w1[i] = m.InputTokens, m.OutputTokens, m.CacheReadTokens, m.CacheWrite5mTokens, m.CacheWrite1hTokens
 			cost[i] = m.CostUSD
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO ai_session_messages (workspace_id, session_id, message_id, model, at, input_tokens, output_tokens,
-				cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, cost_usd)
-			SELECT $1, $2, m.id, m.model, m.at, m.i, m.o, m.cr, m.w5, m.w1, m.cost::numeric(14,6)
+			INSERT INTO ai_session_messages (workspace_id, session_id, message_id, model, at, branch, issue_key,
+				input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, cost_usd)
+			SELECT $1, $2, m.id, m.model, m.at, m.branch, m.issue_key, m.i, m.o, m.cr, m.w5, m.w1, m.cost::numeric(14,6)
 			FROM unnest($3::text[], $4::text[], $5::timestamptz[], $6::bigint[], $7::bigint[], $8::bigint[], $9::bigint[],
-				$10::bigint[], $11::float8[]) AS m(id, model, at, i, o, cr, w5, w1, cost)
+				$10::bigint[], $11::float8[], $12::text[], $13::text[]) AS m(id, model, at, i, o, cr, w5, w1, cost, branch, issue_key)
 			ORDER BY m.id -- one lock order for every push, so concurrent pushes with shared ids cannot deadlock
 			ON CONFLICT (workspace_id, message_id) DO NOTHING`,
-			wsID, id, ids, mdl, at, inTok, outTok, cr, w5, w1, cost); err != nil {
+			wsID, id, ids, mdl, at, inTok, outTok, cr, w5, w1, cost, branch, key); err != nil {
 			return models.AgentSession{}, err
 		}
 	}
@@ -112,8 +120,10 @@ func (s *Store) SaveSession(ctx context.Context, wsID string, in models.AgentSes
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE ai_sessions s SET messages = m.n,
-			started_at = coalesce(m.first_at, s.started_at), ended_at = coalesce(m.last_at, s.ended_at)
-		FROM (SELECT count(*) AS n, min(at) AS first_at, max(at) AS last_at
+			started_at = coalesce(m.first_at, s.started_at), ended_at = coalesce(m.last_at, s.ended_at),
+			issue_keys = CASE WHEN m.n > 0 THEN m.keys ELSE s.issue_keys END
+		FROM (SELECT count(*) AS n, min(at) AS first_at, max(at) AS last_at,
+				coalesce(array_agg(DISTINCT issue_key ORDER BY issue_key) FILTER (WHERE issue_key IS NOT NULL), '{}') AS keys
 			FROM ai_session_messages WHERE session_id=$1) m
 		WHERE s.id=$1`, id); err != nil {
 		return models.AgentSession{}, err
@@ -150,8 +160,46 @@ func (s *Store) ListSessions(ctx context.Context, wsID string, f SessionFilter) 
 	return s.listSessions(ctx, wsID, where, args, limit)
 }
 
-// sessionWhere builds the filter conditions on alias s; placeholders start at n.
+// sessionWhere builds the list filter on sessions (alias s); placeholders
+// start at n. Time and ticket filters look at the session's messages: a
+// session is in range when it holds a message in range (or, holding none,
+// when it started in range), and it matches a ticket when one of its messages
+// was made on that ticket's branch.
 func sessionWhere(f SessionFilter, n int) (string, []any) {
+	where := "true"
+	var args []any
+	next := func(v any) string {
+		args = append(args, v)
+		n++
+		return fmt.Sprintf("$%d", n-1)
+	}
+	var msgTime, startTime []string
+	if !f.From.IsZero() {
+		p := next(f.From)
+		msgTime = append(msgTime, "coalesce(m.at, s.started_at) >= "+p)
+		startTime = append(startTime, "s.started_at >= "+p)
+	}
+	if !f.Before.IsZero() {
+		p := next(f.Before)
+		msgTime = append(msgTime, "coalesce(m.at, s.started_at) < "+p)
+		startTime = append(startTime, "s.started_at < "+p)
+	}
+	if len(msgTime) > 0 {
+		where += " AND (EXISTS (SELECT 1 FROM ai_session_messages m WHERE m.session_id = s.id AND " +
+			strings.Join(msgTime, " AND ") + ") OR (s.messages = 0 AND " + strings.Join(startTime, " AND ") + "))"
+	}
+	if f.Project != "" {
+		where += " AND s.project_path = " + next(f.Project)
+	}
+	if f.Issue != "" {
+		where += " AND EXISTS (SELECT 1 FROM ai_session_messages m WHERE m.session_id = s.id AND m.issue_key = " + next(f.Issue) + ")"
+	}
+	return where, args
+}
+
+// messageWhere builds the summary filter on messages (alias m) and their
+// sessions (alias s); placeholders start at n.
+func messageWhere(f SessionFilter, n int) (string, []any) {
 	where := "true"
 	var args []any
 	add := func(cond string, v any) {
@@ -160,16 +208,16 @@ func sessionWhere(f SessionFilter, n int) (string, []any) {
 		n++
 	}
 	if !f.From.IsZero() {
-		add("s.started_at >= $%d", f.From)
+		add("coalesce(m.at, s.started_at) >= $%d", f.From)
 	}
 	if !f.Before.IsZero() {
-		add("s.started_at < $%d", f.Before)
+		add("coalesce(m.at, s.started_at) < $%d", f.Before)
 	}
 	if f.Project != "" {
 		add("s.project_path = $%d", f.Project)
 	}
 	if f.Issue != "" {
-		add("$%d = ANY(s.issue_keys)", f.Issue)
+		add("m.issue_key = $%d", f.Issue)
 	}
 	return where, args
 }
@@ -232,46 +280,36 @@ func (s *Store) listSessions(ctx context.Context, wsID, where string, args []any
 	return out, urows.Err()
 }
 
-// SessionSummary sums sessions per day (UTC), project, model or ticket key.
-// For a model, sessions counts the sessions that used it and the sums are that
-// model's rows only. For a ticket, a session counts under every key it holds;
-// sessions with no key are grouped under "".
+// SessionSummary sums messages per day (UTC, of each message's time),
+// project (of its session), model, or ticket key (of the branch the message
+// was made on; "" for none). Every message counts in exactly one group, so the
+// groups add up to the real total. sessions counts the distinct sessions with
+// messages in the group. The filters apply to messages: from/to to their time,
+// issue to their ticket key.
 func (s *Store) SessionSummary(ctx context.Context, wsID string, f SessionFilter, group string) ([]models.SessionSummaryRow, error) {
-	where, args := sessionWhere(f, 2)
-	var q string
-	totals := fmt.Sprintf(`
-		WITH t AS (
-			SELECT s.id, s.started_at, s.project_path, s.issue_keys,
-				coalesce(sum(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens), 0) AS tokens,
-				coalesce(sum(u.cost_usd), 0) AS cost
-			FROM ai_sessions s LEFT JOIN ai_session_usage u ON u.session_id = s.id
-			WHERE s.workspace_id=$1 AND %s
-			GROUP BY s.id)`, where)
+	var key string
+	order := "sum(m.cost_usd) DESC, key"
 	switch group {
 	case SessionGroupDay:
-		q = totals + `
-		SELECT to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS key, count(*), sum(tokens)::bigint, sum(cost)::float8
-		FROM t GROUP BY key ORDER BY key`
+		key = "to_char(coalesce(m.at, s.started_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD')"
+		order = "key"
 	case SessionGroupProject:
-		q = totals + `
-		SELECT project_path AS key, count(*), sum(tokens)::bigint, sum(cost)::float8
-		FROM t GROUP BY key ORDER BY sum(cost) DESC, key`
+		key = "s.project_path"
 	case SessionGroupIssue:
-		q = totals + `
-		SELECT k AS key, count(*), sum(tokens)::bigint, sum(cost)::float8
-		FROM t CROSS JOIN LATERAL unnest(CASE WHEN cardinality(issue_keys) = 0 THEN ARRAY[''] ELSE issue_keys END) AS k
-		GROUP BY key ORDER BY sum(cost) DESC, key`
+		key = "coalesce(m.issue_key, '')"
 	case SessionGroupModel:
-		q = fmt.Sprintf(`
-		SELECT u.model AS key, count(DISTINCT s.id),
-			sum(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens)::bigint,
-			sum(u.cost_usd)::float8
-		FROM ai_sessions s JOIN ai_session_usage u ON u.session_id = s.id
-		WHERE s.workspace_id=$1 AND %s
-		GROUP BY u.model ORDER BY sum(u.cost_usd) DESC, key`, where)
+		key = "m.model"
 	default:
 		return nil, invalid("group must be day, project, model or issue")
 	}
+	where, args := messageWhere(f, 2)
+	q := fmt.Sprintf(`
+		SELECT %s AS key, count(DISTINCT m.session_id),
+			coalesce(sum(m.input_tokens + m.output_tokens + m.cache_read_tokens + m.cache_write_5m_tokens + m.cache_write_1h_tokens), 0)::bigint,
+			coalesce(sum(m.cost_usd), 0)::float8
+		FROM ai_session_messages m JOIN ai_sessions s ON s.id = m.session_id
+		WHERE m.workspace_id=$1 AND s.workspace_id=$1 AND %s
+		GROUP BY key ORDER BY %s`, key, where, order)
 	rows, err := s.pool.Query(ctx, q, append([]any{wsID}, args...)...)
 	if err != nil {
 		return nil, err

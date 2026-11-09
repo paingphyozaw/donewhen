@@ -33,6 +33,7 @@ type sessionMessageReq struct {
 	ID                 string    `json:"id"`
 	Model              string    `json:"model"`
 	At                 time.Time `json:"at"`
+	Branch             string    `json:"branch"`
 	InputTokens        int64     `json:"inputTokens"`
 	OutputTokens       int64     `json:"outputTokens"`
 	CacheReadTokens    int64     `json:"cacheReadTokens"`
@@ -61,7 +62,7 @@ func (s *Server) handlePutSession(w http.ResponseWriter, r *http.Request) {
 	msgs := make([]models.SessionMessage, 0, len(req.Messages))
 	for _, m := range req.Messages {
 		msgs = append(msgs, models.SessionMessage{
-			ID: m.ID, Model: m.Model, At: m.At, InputTokens: m.InputTokens, OutputTokens: m.OutputTokens,
+			ID: m.ID, Model: m.Model, At: m.At, Branch: m.Branch, InputTokens: m.InputTokens, OutputTokens: m.OutputTokens,
 			CacheReadTokens: m.CacheReadTokens, CacheWrite5mTokens: m.CacheWrite5mTokens, CacheWrite1hTokens: m.CacheWrite1hTokens,
 		})
 	}

@@ -120,11 +120,11 @@ func TestParseTranscriptPerMessage(t *testing.T) {
 	at := func(v string) time.Time { tm, _ := time.Parse(time.RFC3339, v); return tm }
 	want := []models.SessionMessage{
 		// msg_1 is on two lines: counted once, at its first line.
-		{ID: "msg_1", Model: "claude-opus-5-5", At: at("2026-11-01T10:00:05Z"), InputTokens: 10, OutputTokens: 20, CacheReadTokens: 100, CacheWrite1hTokens: 1000},
+		{ID: "msg_1", Model: "claude-opus-5-5", At: at("2026-11-01T10:00:05Z"), Branch: "feature/biz-277-a", InputTokens: 10, OutputTokens: 20, CacheReadTokens: 100, CacheWrite1hTokens: 1000},
 		// No cache_creation split: the write counts as 5-minute.
-		{ID: "msg_2", Model: "claude-opus-5-5", At: at("2026-11-01T10:30:00Z"), InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, CacheWrite5mTokens: 4},
-		{ID: "msg_3", Model: "claude-sonnet-5-5", At: at("2026-11-01T10:40:00Z"), InputTokens: 5, OutputTokens: 6, CacheReadTokens: 7, CacheWrite5mTokens: 8},
-		{ID: "msg_4", Model: "claude-haiku-5-5", At: at("2026-11-01T10:50:00Z"), InputTokens: 1, OutputTokens: 1, CacheReadTokens: 1, CacheWrite1hTokens: 1},
+		{ID: "msg_2", Model: "claude-opus-5-5", At: at("2026-11-01T10:30:00Z"), Branch: "feature/biz-278-b", InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, CacheWrite5mTokens: 4},
+		{ID: "msg_3", Model: "claude-sonnet-5-5", At: at("2026-11-01T10:40:00Z"), Branch: "feature/biz-278-b", InputTokens: 5, OutputTokens: 6, CacheReadTokens: 7, CacheWrite5mTokens: 8},
+		{ID: "msg_4", Model: "claude-haiku-5-5", At: at("2026-11-01T10:50:00Z"), Branch: "feature/biz-278-b", InputTokens: 1, OutputTokens: 1, CacheReadTokens: 1, CacheWrite1hTokens: 1},
 	}
 	if len(msgs) != len(want) {
 		t.Fatalf("messages = %+v", msgs)
@@ -275,7 +275,7 @@ func TestPushSendsNoText(t *testing.T) {
 			mk = append(mk, k)
 		}
 		sort.Strings(mk)
-		if strings.Join(mk, ",") != "at,cacheReadTokens,cacheWrite1hTokens,cacheWrite5mTokens,id,inputTokens,model,outputTokens" {
+		if strings.Join(mk, ",") != "at,branch,cacheReadTokens,cacheWrite1hTokens,cacheWrite5mTokens,id,inputTokens,model,outputTokens" {
 			t.Fatalf("message fields = %v", mk)
 		}
 	}

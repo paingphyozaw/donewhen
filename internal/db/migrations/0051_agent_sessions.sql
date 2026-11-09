@@ -20,7 +20,8 @@ CREATE TABLE ai_sessions (
 CREATE INDEX ai_sessions_started_idx ON ai_sessions (workspace_id, started_at DESC);
 CREATE INDEX ai_sessions_issue_keys_idx ON ai_sessions USING gin (issue_keys);
 
--- One row per model response. A message id is unique per workspace: the first
+-- One row per model response. Summaries sum these rows, so a long session
+-- spreads over the days and tickets its messages belong to. A message id is unique per workspace: the first
 -- session that sends it keeps it, so a resumed session that repeats earlier
 -- lines never counts them again. cost_usd is fixed when the row is saved, so
 -- a later price change does not rewrite old sessions.
@@ -36,9 +37,13 @@ CREATE TABLE ai_session_messages (
     cache_write_1h_tokens bigint NOT NULL DEFAULT 0 CHECK (cache_write_1h_tokens >= 0),
     cost_usd              numeric(14,6) NOT NULL DEFAULT 0,
     at                    timestamptz,
+    branch                text NOT NULL DEFAULT '',  -- gitBranch of the message's line
+    issue_key             text,                      -- the ticket key that branch names, if any
     UNIQUE (workspace_id, message_id)
 );
 CREATE INDEX ai_session_messages_session_idx ON ai_session_messages (session_id);
+CREATE INDEX ai_session_messages_at_idx ON ai_session_messages (workspace_id, at);
+CREATE INDEX ai_session_messages_issue_idx ON ai_session_messages (workspace_id, issue_key);
 
 -- Per session and model sums of ai_session_messages, rebuilt on every save.
 -- cache_write_tokens is the sum of the 5-minute and 1-hour writes.

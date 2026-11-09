@@ -35,6 +35,11 @@ func msg(id, model, at string, in, out, cr, w5, w1 int64) map[string]any {
 		"cacheReadTokens": cr, "cacheWrite5mTokens": w5, "cacheWrite1hTokens": w1}
 }
 
+func onBranch(m map[string]any, branch string) map[string]any {
+	m["branch"] = branch
+	return m
+}
+
 func decodeSession(t *testing.T, w *httptest.ResponseRecorder) models.AgentSession {
 	t.Helper()
 	var s models.AgentSession
@@ -92,7 +97,7 @@ func TestSessionsPutIsAdditiveAndIdempotent(t *testing.T) {
 	w := e.workspace(owner)
 	ai := bearer(e.token(owner, w.ID))
 
-	m1 := msg("m1", "claude-opus-5-5", "2026-11-01T10:05:00Z", 1_000_000, 100_000, 2_000_000, 0, 500_000)
+	m1 := onBranch(msg("m1", "claude-opus-5-5", "2026-11-01T10:05:00Z", 1_000_000, 100_000, 2_000_000, 0, 500_000), "feature/biz-277-home")
 	m2 := msg("m2", "claude-haiku-5-5", "2026-11-01T10:10:00Z", 10_000, 1_000, 0, 0, 0)
 	body := sessionBody("feature/biz-277-home", "2026-11-01T10:00:00Z", "2026-11-01T11:00:00Z", m1, m2)
 	r := e.do("PUT", "/api/sessions/sess-1", body, ai)
@@ -140,7 +145,7 @@ func TestSessionsPutIsAdditiveAndIdempotent(t *testing.T) {
 
 	// A push with only part of the session (one subagent file) adds, never reduces.
 	part := sessionBody("feature/biz-278-sub", "2026-11-01T10:20:00Z", "2026-11-01T10:30:00Z",
-		msg("m3", "claude-opus-5-5", "2026-11-01T10:25:00Z", 1_000_000, 0, 0, 0, 0))
+		onBranch(msg("m3", "claude-opus-5-5", "2026-11-01T10:25:00Z", 1_000_000, 0, 0, 0, 0), "feature/biz-278-sub"))
 	r = e.do("PUT", "/api/sessions/sess-1", part, ai)
 	if r.Code != 200 {
 		t.Fatalf("partial put: %d %s", r.Code, r.Body.String())
@@ -309,10 +314,10 @@ func TestSessionsListAndSummary(t *testing.T) {
 	}
 	// Day 1: two sessions; day 2: one. Opus 5.5 at 1M input = $4.
 	a := sessionBody("feature/biz-277-x", "2026-11-01T09:00:00Z", "2026-11-01T10:00:00Z",
-		msg("a1", "claude-opus-5-5", "2026-11-01T09:30:00Z", 1_000_000, 0, 0, 0, 0))
+		onBranch(msg("a1", "claude-opus-5-5", "2026-11-01T09:30:00Z", 1_000_000, 0, 0, 0, 0), "feature/biz-277-x"))
 	b := sessionBody("feature/biz-278-y", "2026-11-01T15:00:00Z", "2026-11-01T16:00:00Z",
-		msg("b1", "claude-opus-5-5", "2026-11-01T15:10:00Z", 1_000_000, 0, 0, 0, 0),
-		msg("b2", "claude-sonnet-5-5", "2026-11-01T15:20:00Z", 1_000_000, 0, 0, 0, 0))
+		onBranch(msg("b1", "claude-opus-5-5", "2026-11-01T15:10:00Z", 1_000_000, 0, 0, 0, 0), "feature/biz-277-x"),
+		onBranch(msg("b2", "claude-sonnet-5-5", "2026-11-01T15:20:00Z", 1_000_000, 0, 0, 0, 0), "feature/biz-278-y"))
 	b["issueKeys"] = []string{"BIZ-277"} // a branch seen earlier in the session
 	b["projectPath"] = "/home/dev/other"
 	c := sessionBody("main", "2026-11-02T09:00:00Z", "2026-11-02T09:30:00Z",
@@ -354,13 +359,14 @@ func TestSessionsListAndSummary(t *testing.T) {
 	}
 
 	issue := summary(t, e, "?group=issue", ai)
-	if r := issue["BIZ-277"]; r.Sessions != 2 || !near(r.CostUSD, 10) {
+	// Each message counts under the ticket of its own branch: a1 + b1 = $8, b2 = $2, c1 = $1.
+	if r := issue["BIZ-277"]; r.Sessions != 2 || !near(r.CostUSD, 8) {
 		t.Fatalf("BIZ-277 = %+v", r)
 	}
-	if r := issue["BIZ-278"]; r.Sessions != 1 || !near(r.CostUSD, 6) {
+	if r := issue["BIZ-278"]; r.Sessions != 1 || !near(r.CostUSD, 2) {
 		t.Fatalf("BIZ-278 = %+v", r)
 	}
-	if r := issue[""]; r.Sessions != 1 { // c names no ticket
+	if r := issue[""]; r.Sessions != 1 || !near(r.CostUSD, 1) { // c names no ticket
 		t.Fatalf("no ticket = %+v", r)
 	}
 
@@ -433,5 +439,84 @@ func TestSessionsWorkspaceGuard(t *testing.T) {
 	}
 	if got := listSessions(t, e, "", bearer(e.token(alice, wa.ID))); len(got) != 1 {
 		t.Fatalf("alice now has %d sessions", len(got))
+	}
+}
+
+// A long session spreads over the days and tickets of its messages, and every
+// grouping adds up to the session's total.
+func TestSessionsSummarySplitsBySession(t *testing.T) {
+	e := newEnv(t, config.Config{})
+	owner, _ := e.user("")
+	w := e.workspace(owner)
+	ai := bearer(e.token(owner, w.ID))
+	body := sessionBody("feature/biz-11-b", "2026-11-01T09:00:00Z", "2026-11-03T11:00:00Z",
+		onBranch(msg("d1", "claude-opus-5-5", "2026-11-01T10:00:00Z", 1_000_000, 0, 0, 0, 0), "feature/biz-10-a"),   // $4
+		onBranch(msg("d2", "claude-sonnet-5-5", "2026-11-02T12:00:00Z", 1_000_000, 0, 0, 0, 0), "feature/biz-10-a"), // $2
+		onBranch(msg("d3", "claude-opus-5-5", "2026-11-03T09:00:00Z", 1_000_000, 0, 0, 0, 0), "feature/biz-11-b"),   // $4
+		onBranch(msg("d4", "claude-opus-5-5", "2026-11-03T10:00:00Z", 500_000, 0, 0, 0, 0), "main"))                 // $2
+	r := e.do("PUT", "/api/sessions/long", body, ai)
+	if r.Code != 200 {
+		t.Fatalf("put: %d %s", r.Code, r.Body.String())
+	}
+	s := decodeSession(t, r)
+	if !near(s.CostUSD, 12) || s.Tokens != 3_500_000 || strings.Join(s.IssueKeys, ",") != "BIZ-10,BIZ-11" {
+		t.Fatalf("session = %+v", s)
+	}
+
+	sum := func(rows map[string]models.SessionSummaryRow) (int64, float64) {
+		var tok int64
+		var cost float64
+		for _, r := range rows {
+			tok += r.Tokens
+			cost += r.CostUSD
+		}
+		return tok, cost
+	}
+	type row struct {
+		tokens int64
+		cost   float64
+	}
+	for group, want := range map[string]map[string]row{
+		"day":     {"2026-11-01": {1_000_000, 4}, "2026-11-02": {1_000_000, 2}, "2026-11-03": {1_500_000, 6}},
+		"issue":   {"BIZ-10": {2_000_000, 6}, "BIZ-11": {1_000_000, 4}, "": {500_000, 2}},
+		"model":   {"claude-opus-5-5": {2_500_000, 10}, "claude-sonnet-5-5": {1_000_000, 2}},
+		"project": {"/home/dev/app": {3_500_000, 12}},
+	} {
+		got := summary(t, e, "?group="+group, ai)
+		if len(got) != len(want) {
+			t.Fatalf("%s rows = %+v", group, got)
+		}
+		for k, w := range want {
+			if g := got[k]; g.Tokens != w.tokens || !near(g.CostUSD, w.cost) || g.Sessions != 1 {
+				t.Errorf("%s %q = %+v, want %+v", group, k, g, w)
+			}
+		}
+		if tok, cost := sum(got); tok != s.Tokens || !near(cost, s.CostUSD) {
+			t.Errorf("%s adds up to %d / %v, session is %d / %v", group, tok, cost, s.Tokens, s.CostUSD)
+		}
+	}
+
+	// Summary filters apply to messages.
+	if got := summary(t, e, "?group=day&from=2026-11-02", ai); len(got) != 2 || got["2026-11-01"].Sessions != 0 {
+		t.Fatalf("from filter: %+v", got)
+	}
+	if got := summary(t, e, "?group=day&issue=BIZ-11", ai); len(got) != 1 || got["2026-11-03"].Tokens != 1_000_000 {
+		t.Fatalf("issue filter: %+v", got)
+	}
+	// The list finds the session by any of its messages' days and tickets.
+	if got := listSessions(t, e, "?from=2026-11-03", ai); len(got) != 1 || !near(got[0].CostUSD, 12) {
+		t.Fatalf("list from: %+v", got)
+	}
+	if got := listSessions(t, e, "?to=2026-11-02&from=2026-11-02", ai); len(got) != 1 {
+		t.Fatalf("list on a middle day: %+v", got)
+	}
+	if got := listSessions(t, e, "?issue=BIZ-10", ai); len(got) != 1 {
+		t.Fatalf("list issue: %+v", got)
+	}
+	if got := listSessions(t, e, "?issue=BIZ-12", ai); len(got) != 0 {
+		t.Fatalf("list other issue: %+v", got)
+	}
+	if got := listSessions(t, e, "?from=2026-11-04", ai); len(got) != 0 {
+		t.Fatalf("list after: %+v", got)
 	}
 }

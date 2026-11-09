@@ -10,7 +10,7 @@ DoneWhen can record every Claude Code session: its project, branch, tickets, tok
 |---|---|
 | `sessionId` | the session id |
 | `cwd` | the project path (from the first line) |
-| `gitBranch` | the branch (the last one) and the ticket keys (`feature/biz-277-home` → `BIZ-277`) |
+| `gitBranch` | the branch of each message, and so its ticket key (`feature/biz-277-home` → `BIZ-277`) |
 | `timestamp` | start and end time, and the time of each message |
 | `message.id` (or the line `uuid` when there is no id) | counting each message once |
 | `message.model`, `message.usage` | the tokens of each message |
@@ -27,7 +27,8 @@ The server stores one row per message (`ai_session_messages`). A message id is u
 
 - A resumed session copies earlier lines (same message ids) under its new session id. Those messages stay with the first session and are not counted again.
 - A push is **additive and idempotent**: it adds the messages the server does not have yet. Sending the same push again changes nothing. Sending only part of a session (for example one subagent file) never reduces it.
-- After each push the server rebuilds the session's per-model sums (`ai_session_usage`), its message count, and its start and end (the times of its first and last message).
+- After each push the server rebuilds the session's per-model sums (`ai_session_usage`), its message count, its start and end (the times of its first and last message), and its `issueKeys` (the ticket keys of its messages' branches).
+- Each message keeps the branch of its own line and the ticket key that branch names. A long session that moves from `feature/biz-10-a` to `feature/biz-11-b` counts each message for its own ticket.
 - `--dir` sends the oldest files first, so a first session gets its messages before the session that resumed it.
 - With `--file` (and the hook), the session pushed first keeps the shared messages. If you push a resumed session's file before the original session's file, the resumed session keeps the copied messages. The totals are still right; only which session shows them differs. Push with `--dir` to get the oldest-first order.
 
@@ -95,7 +96,7 @@ All three routes are behind the workspace guard. `PUT` needs an API token or a b
 
 | Method | Path | Input | Result |
 |---|---|---|---|
-| PUT | `/api/sessions/{externalId}` | `projectPath`, `gitBranch`, `issueKeys`, `startedAt`, `endedAt`, `messages[]` (`id`, `model`, `at`, `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWrite5mTokens`, `cacheWrite1hTokens`), at most 5,000 per request | `200` the whole saved session with `tokens` and `costUsd` |
+| PUT | `/api/sessions/{externalId}` | `projectPath`, `gitBranch`, `issueKeys`, `startedAt`, `endedAt`, `messages[]` (`id`, `model`, `at`, `branch`, `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWrite5mTokens`, `cacheWrite1hTokens`), at most 5,000 per request | `200` the whole saved session with `tokens` and `costUsd` |
 | GET | `/api/sessions` | `from`, `to`, `project`, `issue`, `limit` (default 100, max 500) | sessions, newest first, with usage rows and totals; `messages` is the number of messages the session holds |
 | GET | `/api/sessions/summary` | `from`, `to`, `group=day\|project\|model\|issue` | rows `{key, sessions, tokens, costUsd}` |
 
@@ -103,7 +104,14 @@ All three routes are behind the workspace guard. `PUT` needs an API token or a b
 - A usage row has `cacheWriteTokens` (the sum) and `cacheWrite5mTokens`, `cacheWrite1hTokens`.
 - A bad body → `400` with `"code": "invalid_session"`. Unknown fields are refused. A message id may appear only once per request.
 - The server adds the ticket keys of `gitBranch` to `issueKeys`.
-- `from` and `to` take a date (`YYYY-MM-DD`, UTC) or an RFC 3339 time. A date in `to` includes that whole day. Both filter on the start time.
-- `group=day` uses UTC days. `group=issue` counts a session under each of its keys; sessions with no key are under `""`. `group=model` counts the sessions that used the model and sums only that model's rows.
+- `from` and `to` take a date (`YYYY-MM-DD`, UTC) or an RFC 3339 time. A date in `to` includes that whole day.
+- **Summary sums messages, not sessions**, so every grouping adds up to the real total:
+  - `group=day`: by the UTC date of each message.
+  - `group=issue`: by the ticket key of each message's branch; messages with no key are under `""`.
+  - `group=model`: by each message's model.
+  - `group=project`: by the project of the message's session.
+  - `sessions` is the number of sessions with messages in the group.
+  - `from`/`to` filter messages by their time; `issue` filters messages by their key.
+- **List** keeps per-session totals. `from`/`to` return sessions with at least one message in range (a session with no messages: by its start). `issue` returns sessions with at least one message on that ticket's branch.
 - Saving publishes a `session.saved` event. It writes no activity entry.
 - The tables are `ai_sessions`, `ai_session_messages` and `ai_session_usage` (migration `0051_agent_sessions.sql`). Costs are `numeric(14,6)`.
