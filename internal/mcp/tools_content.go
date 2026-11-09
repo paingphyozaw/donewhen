@@ -12,6 +12,7 @@ import (
 	"github.com/johnreginald/donewhen/internal/auth"
 	"github.com/johnreginald/donewhen/internal/events"
 	"github.com/johnreginald/donewhen/internal/models"
+	"github.com/johnreginald/donewhen/internal/service"
 	"github.com/johnreginald/donewhen/internal/store"
 )
 
@@ -219,7 +220,8 @@ func (d *deps) registerContent(s *server.MCPServer) {
 	s.AddTool(mcp.NewTool("get_handoff",
 		mcp.WithDescription("Read a project's handoff: the note the last session left for the next one. "+
 			"Call it at the start of a session. Returns the latest version (or the one you name) with its "+
-			"body, summary, actor, time and version number."),
+			"body, summary, actor, time and version number, plus `rules` and `template`: the format every "+
+			"handoff must follow (six fixed sections, 150 lines, 12,000 characters)."),
 		mcp.WithString("initiative", mcp.Required(), mcp.Description("Project (initiative) id or name")),
 		mcp.WithNumber("version", mcp.Description("Version number; omit for the latest")),
 		wsArg(),
@@ -238,7 +240,8 @@ func (d *deps) registerContent(s *server.MCPServer) {
 		}
 		h, err := d.store.GetHandoff(ctx, wsID, ini.ID, version)
 		if errors.Is(err, store.ErrNotFound) && version == 0 {
-			return jsonResult(map[string]any{"handoff": nil, "hint": "No handoff yet. Use save_handoff."})
+			return jsonResult(map[string]any{"handoff": nil, "hint": "No handoff yet. Use save_handoff.",
+				"rules": service.HandoffRules, "template": service.HandoffTemplate()})
 		}
 		if errors.Is(err, store.ErrNotFound) {
 			return mcp.NewToolResultError(fmt.Sprintf("handoff version %d not found for %s", version, ini.Name)), nil
@@ -246,12 +249,18 @@ func (d *deps) registerContent(s *server.MCPServer) {
 		if err != nil {
 			return toolErr(err), nil
 		}
-		return jsonResult(h)
+		return jsonResult(struct {
+			models.Handoff
+			Rules    string `json:"rules"`
+			Template string `json:"template"`
+		}{h, service.HandoffRules, service.HandoffTemplate()})
 	})
 
 	s.AddTool(mcp.NewTool("save_handoff",
 		mcp.WithDescription("Save a project's handoff as a new version. Call it at the end of a session with the "+
-			"FULL updated text (not a diff): the latest version replaces the old one, which stays in the history."),
+			"FULL updated text (not a diff): the latest version replaces the old one, which stays in the history. "+
+			"The body must follow the template from get_handoff (six fixed sections, at most 150 lines and 12,000 "+
+			"characters), or the save is refused. Only the coordinator saves; builders write ticket comments."),
 		mcp.WithString("initiative", mcp.Required(), mcp.Description("Project (initiative) id or name")),
 		mcp.WithString("body", mcp.Required(), mcp.Description("The whole handoff, as Markdown (at most 200,000 characters)")),
 		mcp.WithString("summary", mcp.Required(), mcp.Description("One line: what changed in this version (at most 200 characters)")),
@@ -265,11 +274,11 @@ func (d *deps) registerContent(s *server.MCPServer) {
 		if err != nil {
 			return toolErr(err), nil
 		}
-		h, err := d.svc.SaveHandoff(ctx, wsID, ini.ID, req.GetString("body", ""), req.GetString("summary", ""), "ai")
+		h, err := d.svc.SaveHandoff(ctx, wsID, ini.ID, req.GetString("body", ""), req.GetString("summary", ""), "ai", false)
 		if err != nil {
 			return toolErr(err), nil
 		}
-		return jsonResult(map[string]any{"version": h.Version, "initiative": ini.Name})
+		return jsonResult(map[string]any{"version": h.Version, "initiative": ini.Name, "done_tickets": h.DoneTickets})
 	})
 
 	// ---- coverage ----

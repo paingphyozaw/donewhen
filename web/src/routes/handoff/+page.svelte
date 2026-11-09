@@ -6,6 +6,7 @@
 	import { showToast } from '$lib/ui.js';
 	import { rel } from '$lib/format.js';
 	import { lineDiff, diffStats } from '$lib/linediff.js';
+	import { countLines, countChars, missingSections, saveBlocker, daysSince, outline } from '$lib/handoff.js';
 
 	let iniId = $state('');
 	let latest = $state(null); // newest version, with body; null = no handoff yet
@@ -20,6 +21,22 @@
 	let summary = $state('');
 	let saving = $state(false);
 	let saveError = $state(null);
+
+	// The format (sections, limits, rules) comes from the server, never a copy here.
+	let fmt = $state(null);
+	let rulesOpen = $state(true);
+	let edEl = $state(null);
+	let proseEl = $state(null);
+	api.handoffFormat().then((f) => (fmt = f)).catch(() => {});
+
+	const dLines = $derived(countLines(draft));
+	const dChars = $derived(countChars(draft));
+	const dMissing = $derived(fmt ? missingSections(draft, fmt.sections) : []);
+	const blocker = $derived(!draft.trim() ? 'The handoff cannot be empty.' : saveBlocker(draft, fmt));
+	const stale = $derived(latest && fmt ? daysSince(latest.createdAt) : 0);
+	const isStale = $derived(!!fmt && stale > fmt.staleDays);
+	const doneTickets = $derived(latest?.done_tickets ?? []);
+	const toc = $derived(editing ? outline(draft) : shown ? outline(shown.bodyMd) : []);
 
 	const who = (a) => (a === 'ai' ? $aiName : 'you');
 	const abs = (iso) => (iso ? new Date(iso).toLocaleString() : '');
@@ -97,14 +114,14 @@
 		}
 	}
 
-	function startEdit() {
-		draft = latest?.bodyMd ?? '';
+	function startEdit(fromTemplate = false) {
+		draft = fromTemplate ? (fmt?.template ?? '') : (latest?.bodyMd ?? '');
 		summary = '';
 		saveError = null;
 		editing = true;
 	}
 	async function save() {
-		if (!draft.trim()) return (saveError = 'The handoff cannot be empty.');
+		if (blocker) return (saveError = blocker);
 		if (!summary.trim()) return (saveError = 'Add a one-line summary of what changed.');
 		saving = true;
 		saveError = null;
@@ -120,11 +137,64 @@
 			saving = false;
 		}
 	}
+	// Jump to a section: in the editor, select its heading; when reading, scroll to it.
+	function jump(t) {
+		if (editing && edEl) {
+			edEl.focus();
+			edEl.setSelectionRange(t.offset, t.offset + t.title.length + 3);
+			const lh = parseFloat(getComputedStyle(edEl).lineHeight) || 18;
+			edEl.scrollTop = Math.max(0, t.line * lh - 40);
+		} else if (proseEl) {
+			const h = [...proseEl.querySelectorAll('h1,h2,h3')].find((e) => e.textContent.trim() === t.title);
+			h?.scrollIntoView({ block: 'start' });
+		}
+	}
 	function editKey(e) {
 		if (e.key === 'Escape') editing = false;
 		else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) save();
 	}
 </script>
+
+{#snippet side(showHistory)}
+	<aside class="hist" aria-label="Handoff guide">
+		{#if fmt}
+			<section class="rules">
+				<button class="rh rtoggle" aria-expanded={rulesOpen} onclick={() => (rulesOpen = !rulesOpen)}>
+					Rules <span aria-hidden="true">{rulesOpen ? '−' : '+'}</span>
+				</button>
+				{#if rulesOpen}
+					<ul class="rl">
+						{#each fmt.rules.split('\n') as line (line)}
+							<li>{line}</li>
+						{/each}
+					</ul>
+				{/if}
+			</section>
+		{/if}
+		{#if toc.length}
+			<h2 class="rh">Outline</h2>
+			<ul class="toc">
+				{#each toc as t (t.offset)}
+					<li><button class="ver" onclick={() => jump(t)}>{t.title}</button></li>
+				{/each}
+			</ul>
+		{/if}
+		{#if showHistory}
+			<h2 class="rh">History</h2>
+			<ul>
+				{#each versions as v (v.version)}
+					<li>
+						<button class="ver" class:on={shown.version === v.version} onclick={() => open(v)}>
+							<span class="vn">v{v.version}{v.version === latest.version ? ' · latest' : ''}</span>
+							<span class="vs">{v.summary}</span>
+							<span class="vm">{who(v.actor)} · {rel(v.createdAt)}</span>
+						</button>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</aside>
+{/snippet}
 
 <div class="pg">
 	<PageHeader crumbs={[{ label: 'Handoff' }]} />
@@ -138,7 +208,7 @@
 					{/each}
 				</select>
 				{#if latest && !editing}
-					<button class="btn" onclick={startEdit}>Edit</button>
+					<button class="btn" onclick={() => startEdit()}>Edit</button>
 				{/if}
 			</div>
 
@@ -152,9 +222,19 @@
 			{:else if loading && !shown}
 				<p class="note">Loading…</p>
 			{:else if editing}
+				<div class="ho-cols">
 				<div class="ho-main">
 					<!-- svelte-ignore a11y_autofocus -->
-					<textarea class="textarea ed" bind:value={draft} onkeydown={editKey} aria-label="Handoff Markdown" autofocus></textarea>
+					<textarea class="textarea ed" bind:value={draft} bind:this={edEl} onkeydown={editKey} aria-label="Handoff Markdown" autofocus></textarea>
+					{#if fmt}
+						<p class="counts">
+							<span class:over={dLines > fmt.maxLines}>{dLines} / {fmt.maxLines} lines</span>
+							<span class:over={dChars > fmt.maxChars}>{dChars.toLocaleString()} / {fmt.maxChars.toLocaleString()} characters</span>
+						</p>
+						{#if dMissing.length}
+							<p class="missing">Missing: {#each dMissing as m, n (m)}<code>{m}</code>{n < dMissing.length - 1 ? ' ' : ''}{/each}</p>
+						{/if}
+					{/if}
 					<div class="savebar">
 						<input
 							class="input sum"
@@ -164,22 +244,31 @@
 							aria-label="Summary"
 							onkeydown={editKey}
 						/>
-						<button class="btn primary" disabled={saving} onclick={save}>{saving ? 'Saving…' : 'Save'}</button>
+						<button class="btn primary" disabled={saving || !!blocker} title={blocker} onclick={save}>{saving ? 'Saving…' : 'Save'}</button>
 						<button class="btn ghost" disabled={saving} onclick={() => (editing = false)}>Cancel</button>
 					</div>
-					{#if saveError}<p class="saveerr">{saveError}</p>{/if}
+					{#if blocker && !dMissing.length}<p class="saveerr">{blocker}</p>{:else if saveError && !blocker}<p class="saveerr">{saveError}</p>{/if}
+				</div>
+				{@render side(false)}
 				</div>
 			{:else if !shown}
 				<div class="note">
 					<p>No handoff yet for this project.</p>
-					<button class="btn primary" onclick={startEdit}>Write the first handoff</button>
+					<button class="btn primary" onclick={() => startEdit(true)} disabled={!fmt}>Start from template</button>
+					<button class="btn ghost" onclick={() => startEdit()}>Start empty</button>
 				</div>
 			{:else}
 				<div class="ho-cols">
 					<div class="ho-main">
 						<p class="meta">
 							{#if isOld}Version {shown.version}, {/if}Updated <span title={abs(shown.createdAt)}>{rel(shown.createdAt)}</span> by {who(shown.actor)} — {shown.summary}
+							{#if !isOld && isStale}<span class="pill stale" title={abs(latest.createdAt)}>Stale — updated {stale} days ago</span>{/if}
 						</p>
+						{#if !isOld && doneTickets.length}
+							<div class="warnbox" role="status">
+								<b>Done or canceled, still In flight:</b> {doneTickets.join(', ')}. Remove them from the next save.
+							</div>
+						{/if}
 						{#if isOld}
 							<div class="oldbar">
 								<span>You are reading version {shown.version}. The latest is version {latest.version}.</span>
@@ -198,23 +287,10 @@
 								{/each}
 							</div>
 						{:else}
-							<div class="prose"><Markdown source={shown.bodyMd} /></div>
+							<div class="prose" bind:this={proseEl}><Markdown source={shown.bodyMd} /></div>
 						{/if}
 					</div>
-					<aside class="hist" aria-label="History">
-						<h2 class="rh">History</h2>
-						<ul>
-							{#each versions as v (v.version)}
-								<li>
-									<button class="ver" class:on={shown.version === v.version} onclick={() => open(v)}>
-										<span class="vn">v{v.version}{v.version === latest.version ? ' · latest' : ''}</span>
-										<span class="vs">{v.summary}</span>
-										<span class="vm">{who(v.actor)} · {rel(v.createdAt)}</span>
-									</button>
-								</li>
-							{/each}
-						</ul>
-					</aside>
+					{@render side(true)}
 				</div>
 			{/if}
 		</div>
@@ -347,6 +423,70 @@
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
+	}
+	.rtoggle {
+		display: flex;
+		justify-content: space-between;
+		width: 100%;
+		background: none;
+		border: 0;
+		padding: 0;
+		cursor: pointer;
+	}
+	.rules {
+		border: 1px solid var(--line);
+		border-radius: var(--r);
+		padding: 8px 10px;
+		margin-bottom: 14px;
+	}
+	.rl {
+		margin-top: 8px !important;
+		font-size: var(--t-xs);
+		color: var(--ink-2);
+		line-height: 1.45;
+		gap: 4px !important;
+	}
+	.toc {
+		margin-bottom: 14px !important;
+	}
+	.toc .ver {
+		padding: 4px 10px;
+		font-size: var(--t-sm);
+	}
+	.hist h2 + ul {
+		margin-bottom: 14px;
+	}
+	.counts {
+		display: flex;
+		gap: 14px;
+		margin: 6px 0 0;
+		font-family: var(--mono);
+		font-size: var(--t-xs);
+		color: var(--ink-3);
+	}
+	.counts .over {
+		color: var(--danger);
+	}
+	.missing {
+		margin: 6px 0 0;
+		font-size: var(--t-sm);
+		color: var(--danger);
+	}
+	.missing code {
+		margin-right: 6px;
+	}
+	.pill.stale {
+		margin-left: 6px;
+		color: var(--st-progress);
+		border-color: var(--st-progress);
+	}
+	.warnbox {
+		margin: 0 0 12px;
+		padding: 8px 12px;
+		border: 1px solid var(--st-progress);
+		border-radius: var(--r);
+		font-size: var(--t-sm);
+		color: var(--ink-2);
 	}
 	.rh {
 		font-family: var(--mono);

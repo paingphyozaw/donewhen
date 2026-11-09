@@ -21,7 +21,7 @@ import (
 // so it needs DONEWHEN_URL and a token, not the database.
 func runHandoff(args []string) {
 	if len(args) == 0 || args[0] != "import" {
-		fmt.Fprintln(os.Stderr, "usage: donewhen handoff import --initiative <name|id> --file <path> [--workspace <slug>] [--summary <text>]")
+		fmt.Fprintln(os.Stderr, "usage: donewhen handoff import --initiative <name|id> --file <path> [--workspace <slug>] [--summary <text>] [--legacy]")
 		os.Exit(2)
 	}
 	fs := flag.NewFlagSet("handoff import", flag.ExitOnError)
@@ -29,6 +29,7 @@ func runHandoff(args []string) {
 	file := fs.String("file", "", "Markdown file to save as the next version")
 	wsp := fs.String("workspace", os.Getenv("DONEWHEN_WORKSPACE"), "workspace slug (default: DONEWHEN_WORKSPACE)")
 	summary := fs.String("summary", "Imported from HANDOFF.md", "one-line summary of this version")
+	legacy := fs.Bool("legacy", false, "skip the six-section and size checks, for old HANDOFF.md files")
 	_ = fs.Parse(args[1:])
 	if *ini == "" || *file == "" {
 		log.Fatal("--initiative and --file are required")
@@ -54,7 +55,7 @@ func runHandoff(args []string) {
 		log.Fatalf("read %s: %v", path, err)
 	}
 	c := &handoffClient{http: &http.Client{Timeout: 30 * time.Second}, base: base, token: token, workspace: *wsp}
-	version, name, err := c.importHandoff(*ini, string(body), *summary)
+	version, name, err := c.importHandoff(*ini, string(body), *summary, *legacy)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -127,8 +128,9 @@ func (c *handoffClient) do(method, path string, in, out any) error {
 }
 
 // importHandoff finds the initiative by id or name, then saves body as its
-// next handoff version. It returns the version number and the initiative name.
-func (c *handoffClient) importHandoff(initiative, body, summary string) (int, string, error) {
+// next handoff version. legacy asks the server to skip the structure checks
+// (the server accepts it on this REST path only; save_handoff never does). It returns the version number and the initiative name.
+func (c *handoffClient) importHandoff(initiative, body, summary string, legacy bool) (int, string, error) {
 	var list []struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
@@ -152,7 +154,7 @@ func (c *handoffClient) importHandoff(initiative, body, summary string) (int, st
 		Version int `json:"version"`
 	}
 	if err := c.do("PUT", "/api/initiatives/"+url.PathEscape(id)+"/handoff",
-		map[string]string{"body": body, "summary": summary}, &saved); err != nil {
+		map[string]any{"body": body, "summary": summary, "legacy": legacy}, &saved); err != nil {
 		return 0, "", err
 	}
 	return saved.Version, name, nil
