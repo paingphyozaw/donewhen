@@ -24,7 +24,7 @@
 	import WorkspaceMenu from './WorkspaceMenu.svelte';
 	import {
 		FileText, Box, Plus, Archive, Search, Pencil, History, Inbox, Columns3, List, Layers, GitFork,
-		ChevronsUpDown, Settings, NotebookText, LogOut, ChevronRight, ChevronLeft, OctagonX, Bookmark, X, Coins
+		ChevronsUpDown, Settings, Handshake, LogOut, ChevronRight, ChevronLeft, OctagonX, Bookmark, X, Coins
 	} from '@lucide/svelte';
 	import { parseFilters, serializeFilters } from '$lib/filters.js';
 
@@ -35,7 +35,7 @@
 		{ href: '/blocked', label: 'Blocked', icon: OctagonX },
 		{ href: '/links', label: 'Links', icon: GitFork },
 		{ href: '/sessions', label: 'Sessions', icon: Coins },
-		{ href: '/handoff', label: 'Handoff', icon: NotebookText },
+		{ href: '/handoff', label: 'Handoff', icon: Handshake },
 		{ href: '/artifacts', label: 'Artifacts', icon: FileText },
 		{ href: '/log', label: 'Log', icon: History },
 		{ href: '/settings', label: 'Settings', icon: Settings }
