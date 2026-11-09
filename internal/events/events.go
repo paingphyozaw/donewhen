@@ -18,6 +18,9 @@ const (
 	CommentAdded      = "comment.added"
 	DocumentSaved     = "document.saved"
 	DocumentDeleted   = "document.deleted"
+	// SessionSaved is published when an agent session is saved (BIZ-278). It
+	// carries numbers and metadata only and writes no activity entry.
+	SessionSaved = "session.saved"
 	// MemberRemoved is published when a user loses membership of a workspace.
 	// The SSE handler closes that user's open streams for the workspace and does
 	// not forward the event to any client.
@@ -42,6 +45,7 @@ type Event struct {
 	Comment     *models.Comment       `json:"comment,omitempty"`
 	Document    *models.Document      `json:"document,omitempty"`
 	DocumentID  string                `json:"documentId,omitempty"`
+	Session     *models.AgentSession  `json:"session,omitempty"`
 	// UserID names the subject of member.removed.
 	UserID string    `json:"userId,omitempty"`
 	At     time.Time `json:"at"`

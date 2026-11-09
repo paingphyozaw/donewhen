@@ -279,6 +279,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/documents/{id}", s.wsGuard(s.handleUpdateDocument))
 	mux.HandleFunc("DELETE /api/documents/{id}", s.wsGuard(s.handleDeleteDocument))
 
+	// Agent sessions and token usage (BIZ-278).
+	mux.HandleFunc("PUT /api/sessions/{externalId}", s.wsGuard(s.handlePutSession))
+	mux.HandleFunc("GET /api/sessions", s.wsGuard(s.handleListSessions))
+	mux.HandleFunc("GET /api/sessions/summary", s.wsGuard(s.handleSessionSummary))
+
 	// Push.
 	// bulk import (external tracker → DoneWhen)
 	// Admin-only and session-only: an import rewrites keys and descriptions
