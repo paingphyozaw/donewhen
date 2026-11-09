@@ -249,7 +249,7 @@
 			<a
 				href={n.href}
 				class="nav-item"
-				class:active={n.href === '/artifacts' ? $page.url.pathname.startsWith('/artifacts') : $page.url.pathname === n.href}
+				class:active={n.href === '/artifacts' || n.href === '/sessions' ? $page.url.pathname.startsWith(n.href) : $page.url.pathname === n.href}
 				onclick={onnavigate}
 			>
 				<span class="icon" style="position:relative">

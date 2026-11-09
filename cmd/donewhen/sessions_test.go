@@ -264,7 +264,7 @@ func TestPushSendsNoText(t *testing.T) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	if strings.Join(keys, ",") != "endedAt,gitBranch,issueKeys,messages,projectPath,startedAt" {
+	if strings.Join(keys, ",") != "agents,endedAt,gitBranch,issueKeys,messages,projectPath,startedAt" {
 		t.Fatalf("body fields = %v", keys)
 	}
 	var msgs []map[string]json.RawMessage
@@ -275,7 +275,9 @@ func TestPushSendsNoText(t *testing.T) {
 			mk = append(mk, k)
 		}
 		sort.Strings(mk)
-		if strings.Join(mk, ",") != "at,branch,cacheReadTokens,cacheWrite1hTokens,cacheWrite5mTokens,id,inputTokens,model,outputTokens" {
+		// agentId only on subagent messages (BIZ-282).
+		got := strings.Replace(strings.Join(mk, ","), "agentId,", "", 1)
+		if got != "at,branch,cacheReadTokens,cacheWrite1hTokens,cacheWrite5mTokens,id,inputTokens,model,outputTokens" {
 			t.Fatalf("message fields = %v", mk)
 		}
 	}

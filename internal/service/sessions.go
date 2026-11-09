@@ -20,6 +20,9 @@ const (
 	maxSessionMessages   = 5000 // per push; the importer sends 2,000
 	maxSessionMessageID  = 200
 	maxSessionIssueKeys  = 100
+	maxSessionAgents     = 2000
+	maxAgentType         = 100
+	maxAgentDescription  = 300
 )
 
 var issueKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]+$`)
@@ -33,9 +36,25 @@ func invalidSession(format string, args ...any) error {
 // push is additive: messages already saved (by this or any other session of
 // the workspace) are skipped. It publishes session.saved and writes no
 // activity entry: sessions are noise in the Log.
-func (s *Service) SaveSession(ctx context.Context, wsID string, in models.AgentSession, msgs []models.SessionMessage, actor string) (models.AgentSession, error) {
+//
+// agents are the session's subagent runs (BIZ-282). A message's ticket key
+// is the key its run's description names; else the key of its branch. The
+// store applies the run's key, so a run saved by an earlier push still counts.
+func (s *Service) SaveSession(ctx context.Context, wsID string, in models.AgentSession, msgs []models.SessionMessage, agents []models.SessionAgent, actor string) (models.AgentSession, error) {
 	if err := cleanSession(&in, msgs); err != nil {
 		return models.AgentSession{}, err
+	}
+	if err := cleanAgents(agents); err != nil {
+		return models.AgentSession{}, err
+	}
+	if len(agents) > 0 {
+		prefixes, err := s.keyPrefixes(ctx, wsID, in, msgs)
+		if err != nil {
+			return models.AgentSession{}, err
+		}
+		for i := range agents {
+			agents[i].IssueKey = models.IssueKeyFromText(agents[i].Description, prefixes)
+		}
 	}
 	for i := range msgs {
 		msgs[i].CostUSD = models.MessageCost(msgs[i])
@@ -44,7 +63,7 @@ func (s *Service) SaveSession(ctx context.Context, wsID string, in models.AgentS
 			msgs[i].IssueKey = keys[0]
 		}
 	}
-	saved, err := s.Store.SaveSession(ctx, wsID, in, msgs)
+	saved, err := s.Store.SaveSession(ctx, wsID, in, msgs, agents)
 	if err != nil {
 		return saved, err
 	}
@@ -55,6 +74,58 @@ func (s *Service) SaveSession(ctx context.Context, wsID string, in models.AgentS
 		Session:     &saved,
 	})
 	return saved, nil
+}
+
+// keyPrefixes lists the issue prefixes a run description may name, best
+// first: the workspace's own, then the ones the session's branches name, then
+// every other workspace's. "UTF-8" or "ISO-8601" match none of them.
+func (s *Service) keyPrefixes(ctx context.Context, wsID string, in models.AgentSession, msgs []models.SessionMessage) ([]string, error) {
+	all, err := s.Store.IssuePrefixes(ctx, wsID)
+	if err != nil {
+		return nil, err
+	}
+	out := append([]string{}, all[:min(1, len(all))]...)
+	branches := []string{in.GitBranch}
+	for _, m := range msgs {
+		branches = append(branches, m.Branch)
+	}
+	for _, b := range branches {
+		for _, k := range models.IssueKeysFromBranch(b) {
+			out = append(out, k[:strings.LastIndex(k, "-")])
+		}
+	}
+	return append(out, all...), nil
+}
+
+// cleanAgents validates the runs of a push in place. Every error wraps store.ErrInvalid.
+func cleanAgents(agents []models.SessionAgent) error {
+	if len(agents) > maxSessionAgents {
+		return invalidSession("at most %d agents per request", maxSessionAgents)
+	}
+	seen := map[string]bool{}
+	for i := range agents {
+		a := &agents[i]
+		a.ID = strings.TrimSpace(a.ID)
+		if n := utf8.RuneCountInString(a.ID); n < 1 || n > maxSessionMessageID {
+			return invalidSession("agent id must be 1-%d characters", maxSessionMessageID)
+		}
+		if seen[a.ID] {
+			return invalidSession("agent %q is listed twice", a.ID)
+		}
+		seen[a.ID] = true
+		a.Type = strings.TrimSpace(a.Type)
+		a.Description = strings.TrimSpace(a.Description)
+		if utf8.RuneCountInString(a.Type) > maxAgentType {
+			return invalidSession("agent type is too long")
+		}
+		if utf8.RuneCountInString(a.Description) > maxAgentDescription {
+			return invalidSession("agent description must be at most %d characters", maxAgentDescription)
+		}
+		if utf8.RuneCountInString(a.Model) > maxSessionModel {
+			return invalidSession("agent model is too long")
+		}
+	}
+	return nil
 }
 
 // cleanSession validates a session in place. Every error wraps store.ErrInvalid.
@@ -104,6 +175,9 @@ func cleanSession(in *models.AgentSession, msgs []models.SessionMessage) error {
 			return invalidSession("message %q is listed twice", m.ID)
 		}
 		seenID[m.ID] = true
+		if utf8.RuneCountInString(m.AgentID) > maxSessionMessageID {
+			return invalidSession("message agentId is too long")
+		}
 		if utf8.RuneCountInString(m.Branch) > maxSessionBranch {
 			return invalidSession("message branch is too long")
 		}

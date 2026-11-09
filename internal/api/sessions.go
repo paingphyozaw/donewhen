@@ -25,6 +25,16 @@ type sessionReq struct {
 	StartedAt   time.Time           `json:"startedAt"`
 	EndedAt     time.Time           `json:"endedAt"`
 	Messages    []sessionMessageReq `json:"messages"`
+	Agents      []sessionAgentReq   `json:"agents"`
+}
+
+// sessionAgentReq is one subagent run (BIZ-282): its id, type, model and the
+// short task title the coordinator gave it.
+type sessionAgentReq struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Description string `json:"description"`
+	Model       string `json:"model"`
 }
 
 // sessionMessageReq is the usage of one model response; id is the opaque
@@ -39,6 +49,7 @@ type sessionMessageReq struct {
 	CacheReadTokens    int64     `json:"cacheReadTokens"`
 	CacheWrite5mTokens int64     `json:"cacheWrite5mTokens"`
 	CacheWrite1hTokens int64     `json:"cacheWrite1hTokens"`
+	AgentID            string    `json:"agentId"` // the subagent run; empty for the coordinator
 }
 
 func writeInvalidSession(w http.ResponseWriter, msg string) {
@@ -64,9 +75,14 @@ func (s *Server) handlePutSession(w http.ResponseWriter, r *http.Request) {
 		msgs = append(msgs, models.SessionMessage{
 			ID: m.ID, Model: m.Model, At: m.At, Branch: m.Branch, InputTokens: m.InputTokens, OutputTokens: m.OutputTokens,
 			CacheReadTokens: m.CacheReadTokens, CacheWrite5mTokens: m.CacheWrite5mTokens, CacheWrite1hTokens: m.CacheWrite1hTokens,
+			AgentID: strings.TrimSpace(m.AgentID),
 		})
 	}
-	saved, err := s.svc.SaveSession(r.Context(), ws(r), in, msgs, auth.ActorFrom(r.Context()))
+	agents := make([]models.SessionAgent, 0, len(req.Agents))
+	for _, a := range req.Agents {
+		agents = append(agents, models.SessionAgent{ID: a.ID, Type: a.Type, Description: a.Description, Model: a.Model})
+	}
+	saved, err := s.svc.SaveSession(r.Context(), ws(r), in, msgs, agents, auth.ActorFrom(r.Context()))
 	if errors.Is(err, store.ErrInvalid) {
 		writeInvalidSession(w, strings.TrimPrefix(err.Error(), "invalid: "))
 		return

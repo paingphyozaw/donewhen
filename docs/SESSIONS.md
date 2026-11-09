@@ -15,6 +15,16 @@ DoneWhen can record every Claude Code session: its project, branch, tickets, tok
 | `message.id` (or the line `uuid` when there is no id) | counting each message once |
 | `message.model`, `message.usage` | the tokens of each message |
 
+For each subagent transcript `<session>/subagents/**/agent-<id>.jsonl` it also reads `agent-<id>.meta.json` next to it (BIZ-282), and only these keys:
+
+| Key | Used for |
+|---|---|
+| `agentType` | the run's type: `implementer`, `reviewer`, `tester`, `general-purpose`, `Explore`, `Plan`, `fork`… |
+| `description` | the short task title the coordinator gave the run ("Build BIZ-278 sessions backend"), cut at 300 characters |
+| `model` | the run's model, when the file has it |
+
+The run id is the `<id>` of the file name. A run without a meta file is still sent, with its id only. `description` is the **only free text** that leaves the machine.
+
 It **never sends message text, tool input or tool output.** The parser does not even decode them. Message ids are opaque ids, not content.
 
 - Claude Code writes one line per content block of a message. The same `message.id` can appear on several lines. The importer sends each message once.
@@ -31,6 +41,33 @@ The server stores one row per message (`ai_session_messages`). A message id is u
 - Each message keeps the branch of its own line and the ticket key that branch names. A long session that moves from `feature/biz-10-a` to `feature/biz-11-b` counts each message for its own ticket.
 - `--dir` sends the oldest files first, so a first session gets its messages before the session that resumed it.
 - With `--file` (and the hook), the session pushed first keeps the shared messages. If you push a resumed session's file before the original session's file, the resumed session keeps the copied messages. The totals are still right; only which session shows them differs. Push with `--dir` to get the oldest-first order.
+
+## Who made each message (BIZ-282)
+
+Every message carries `agentId`: the subagent run whose transcript holds it. A message of the main transcript has none: it is the **coordinator's**. When a fork copies lines of the main transcript, the copy keeps the coordinator (the first file that holds a message id wins, and the main transcript is read first).
+
+A message's ticket key:
+
+| Message from | Key |
+|---|---|
+| a run whose `description` names a key (`BIZ-278`, upper case, with a real issue prefix) | that key |
+| a run with no key in its description | the key of the message's branch |
+| the coordinator | the key of the message's branch |
+
+- A key counts only when its prefix is a real issue prefix: the workspace's own (preferred), one a branch of the session names, or another workspace's. So "Fix UTF-8 bug for BIZ-12" gives `BIZ-12`, and "ISO-8601" gives none.
+- Each message also keeps its branch key (`branch_key`). Its `issue_key` is its run's key, else that branch key.
+- Runs are stored in `ai_session_agents` (one row per run, unique per workspace; migration `0053_session_agents.sql`). A run belongs to the session that first sent it.
+- **Re-push refreshes:** pushing a session again sets `agent_id` and `issue_key` on the messages that session already holds. A run that no longer names a key gives its messages their branch key back, so a wrong key is cleaned by a re-push. The refresh locks the session's rows in message id order, so two pushes of one session wait for each other. Tokens, cost and which session owns a message never change. A push from an older importer (no `agentId`) keeps the stored agent. To fix data saved before BIZ-282, run `donewhen sessions push --dir …` again.
+
+### Coordinator overhead
+
+A hub coordinator sits on one branch (say `feature/biz-102-app-list`) for days while its runs build other tickets. Its own messages would all count for BIZ-102. So the `ticket` summary keeps them apart:
+
+- A message is **coordinator overhead** when its key comes only from its branch (the coordinator's own message, or a run with no key in its description), its session runs agents for another ticket, **and** no run of the session names the branch's ticket.
+- Those messages form a separate row with `coordinator: true` and the branch key (the UI shows "Coordinator (branch BIZ-102)").
+- A session opened on a ticket's own branch stays that ticket's work: it has no runs for other tickets, or it runs agents for its own ticket too (on `feature/biz-282-…`, runs for BIZ-282 and BIZ-281 → the coordinator's work stays on BIZ-282).
+- Limit: a hub on a stale branch that once runs an agent for that branch's ticket counts all its coordinator work there. Move the hub to a branch without a ticket key (or `main`) to avoid it.
+- The `issue` group does not split them: it keys every message by its key, as before.
 
 ## Cost
 
@@ -98,8 +135,9 @@ All three routes are behind the workspace guard. `PUT` needs an API token or a b
 |---|---|---|---|
 | PUT | `/api/sessions/{externalId}` | `projectPath`, `gitBranch`, `issueKeys`, `startedAt`, `endedAt`, `messages[]` (`id`, `model`, `at`, `branch`, `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWrite5mTokens`, `cacheWrite1hTokens`), at most 5,000 per request | `200` the whole saved session with `tokens` and `costUsd` |
 | GET | `/api/sessions` | `from`, `to`, `project`, `issue`, `limit` (default 100, max 500) | sessions, newest first, with usage rows and totals; `messages` is the number of messages the session holds |
-| GET | `/api/sessions/summary` | `from`, `to`, `group=day\|project\|model\|issue` | rows `{key, sessions, tokens, costUsd}` |
+| GET | `/api/sessions/summary` | `from`, `to`, `project`, `issue`, `group=day\|project\|model\|issue\|kind\|agent_type\|agent\|ticket` | rows `{key, sessions, messages, tokens, cacheReadTokens, costUsd, …}` |
 
+- PUT also takes `agents[]` (`id`, `type`, `description` at most 300 characters, `model`) and `agentId` per message (BIZ-282).
 - PUT is additive: the server keeps messages it already has (see above), merges the metadata (earliest start, latest end, union of ticket keys, the branch of the latest push), then rebuilds the sums.
 - A usage row has `cacheWriteTokens` (the sum) and `cacheWrite5mTokens`, `cacheWrite1hTokens`.
 - A bad body → `400` with `"code": "invalid_session"`. Unknown fields are refused. A message id may appear only once per request.
@@ -112,6 +150,25 @@ All three routes are behind the workspace guard. `PUT` needs an API token or a b
   - `group=project`: by the project of the message's session.
   - `sessions` is the number of sessions with messages in the group.
   - `from`/`to` filter messages by their time; `issue` filters messages by their key.
-- **List** keeps per-session totals. `from`/`to` return sessions with at least one message in range (a session with no messages: by its start). `issue` returns sessions with at least one message on that ticket's branch.
+  - `group=kind`: four rows `input`, `output`, `cache_read`, `cache_write`. Each model's stored cost is split by token count × the price table, then scaled so the four rows add up to the stored cost. No messages → no rows.
+  - `group=agent_type`: `coordinator` and each run type; `runs` is the number of runs (for the coordinator: sessions). A run with no meta is `unknown`.
+  - `group=agent`: one row per run: `key` (agent id), `type`, `description`, `issue` (the key its description names, else the most common key of its messages), `model`, `session`, `startedAt`, `endedAt`, `messages`.
+  - `group=ticket`: one row per ticket key, plus coordinator rows (`coordinator: true`, see above). `costByType` and `runsByType` split the row by agent type; `lastAt` is its last message.
+  - `group=day` rows also carry `kinds` (the day's cost by token kind) for the stacked chart.
+  - Every row has `messages` and `cacheReadTokens` (the UI's "average context per message" = cache-read tokens ÷ messages).
+- **List** keeps per-session totals. Each session also has `kinds` (its cost by token kind) and `agents` (its runs: `id`, `type`, `description`, `issue`, `model`, `messages`, `tokens`, `costUsd`). `from`/`to` return sessions with at least one message in range (a session with no messages: by its start). `issue` returns sessions with at least one message on that ticket's branch.
 - Saving publishes a `session.saved` event. It writes no activity entry.
-- The tables are `ai_sessions`, `ai_session_messages` and `ai_session_usage` (migration `0051_agent_sessions.sql`). Costs are `numeric(14,6)`.
+- The tables are `ai_sessions`, `ai_session_messages` and `ai_session_usage` (migration `0051_agent_sessions.sql`), and `ai_session_agents` (`0053_session_agents.sql`). Costs are `numeric(14,6)`.
+
+## The Sessions page
+
+Four views share one filter header (range, project, ticket; kept in the URL):
+
+| View | Path | Shows |
+|---|---|---|
+| Overview | `/sessions` | 6 tiles, insights, cost per day stacked by token kind, money by kind and by agent type, top 5 tickets |
+| Tickets | `/sessions/tickets` | one row per ticket: build (implementer), review (reviewer) and other cost, runs, tokens, last activity; coordinator rows apart. A row opens the Agents view for that ticket |
+| Agents | `/sessions/agents` | one row per run; filter by type (`?type=`) and ticket; sort by cost or start |
+| Sessions | `/sessions/list` | breakdown by project and model, and the list; the tickets cell is one line (`BIZ-101 +6`); an open row shows usage per model, cost per kind and the runs |
+
+Insights (`insights()` in `web/src/lib/sessions.js`) each have a threshold and stay hidden below it: cache reads ≥ 50% of cost; the split by agent type; average context ≥ 100,000 tokens per message; one ticket ≥ 25% of cost; reviews ≥ 30% of build cost.
