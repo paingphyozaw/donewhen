@@ -24,8 +24,10 @@
 	import WorkspaceMenu from './WorkspaceMenu.svelte';
 	import {
 		FileText, Box, Plus, Archive, Search, Pencil, History, Inbox, Columns3, List, Layers, GitFork,
-		ChevronsUpDown, Settings, Handshake, LogOut, ChevronRight, ChevronLeft, OctagonX, Bookmark, X, Coins
+		ChevronsUpDown, Settings, Handshake, LogOut, ChevronRight, ChevronLeft, OctagonX, Bookmark, X, Coins,
+		Sun, Moon
 	} from '@lucide/svelte';
+	import { resolvedTheme, toggleTheme } from '$lib/theme.js';
 	import { parseFilters, serializeFilters } from '$lib/filters.js';
 
 	// The broad app sections (design's sidebar nav).
@@ -302,6 +304,14 @@
 			<span class="avatar">{($me?.email || '?').slice(0, 2).toUpperCase()}</span>
 			<span class="uname">{$me?.email || ''}</span>
 		</button>
+		<button
+			class="themetoggle"
+			onclick={toggleTheme}
+			title={$resolvedTheme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+			aria-label={$resolvedTheme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+		>
+			{#if $resolvedTheme === 'dark'}<Sun size={15} strokeWidth={2} />{:else}<Moon size={15} strokeWidth={2} />{/if}
+		</button>
 		{#if userOpen}
 			<div class="menu-backdrop" role="presentation" onclick={() => (userOpen = false)}></div>
 			<div class="user-menu">
@@ -437,6 +447,7 @@
 		letter-spacing: 0.04em;
 	}
 	.ws-menu {
+		animation: pop-in var(--dur) var(--ease);
 		position: fixed;
 		/* Grow past the sidebar so long workspace names aren't cut. */
 		width: max-content;
@@ -684,12 +695,35 @@
 		padding-top: 8px;
 		border-top: 1px solid var(--line);
 		width: 100%;
+		display: flex;
+		align-items: center;
+		gap: 2px;
+	}
+	.sidebar.collapsed .foot {
+		flex-direction: column-reverse;
+		gap: 4px;
+	}
+	.themetoggle {
+		flex: none;
+		width: 30px;
+		height: 30px;
+		display: grid;
+		place-items: center;
+		background: none;
+		border: none;
+		border-radius: var(--r-sm);
+		color: var(--ink-2);
+	}
+	.themetoggle:hover {
+		background: var(--hover);
+		color: var(--ink);
 	}
 	.user {
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		width: 100%;
+		flex: 1;
+		min-width: 0;
 		background: none;
 		border: none;
 		color: var(--ink-2);
@@ -726,6 +760,7 @@
 		display: none;
 	}
 	.user-menu {
+		animation: pop-in var(--dur) var(--ease);
 		position: absolute;
 		bottom: 42px;
 		left: 0;

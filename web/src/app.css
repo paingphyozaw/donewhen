@@ -1,44 +1,43 @@
 /* DoneWhen design tokens — light-first, calm (PP-208).
-   Source of truth: Claude Design project "DoneWhen Design System" → tokens.css.
-   Warm paper neutrals, one ink-blue accent, state hues at equal
-   lightness/chroma. Dark is the same roles, re-valued: explicit
+   Pure neutrals (no hue), an ink accent that inverts with the theme, state
+   hues at equal lightness/chroma. Dark is the same roles, re-valued: explicit
    [data-theme='dark'] on <html>, or the OS preference unless the user chose
-   light. */
+   light. This file is the source of truth for the tokens. */
 
 :root {
 	color-scheme: light;
 
 	/* surfaces */
-	--paper: oklch(0.985 0.004 85); /* app background */
-	--surface: oklch(0.997 0.002 85); /* cards, panels, inputs, menus */
-	--sunken: oklch(0.963 0.005 85); /* sidebar, board columns, code */
-	--hover: oklch(0.945 0.006 85);
-	--line: oklch(0.915 0.006 85);
-	--line-strong: oklch(0.86 0.008 85);
+	--paper: oklch(0.985 0 0); /* app background */
+	--surface: oklch(1 0 0); /* cards, panels, inputs, menus */
+	--sunken: oklch(0.965 0 0); /* sidebar, board columns, code */
+	--hover: oklch(0.94 0 0);
+	--line: oklch(0.92 0 0);
+	--line-strong: oklch(0.87 0 0);
 
 	/* ink */
-	--ink: oklch(0.25 0.01 70); /* primary text */
-	--ink-2: oklch(0.46 0.01 70); /* secondary text */
-	--ink-3: oklch(0.53 0.008 70); /* meta, placeholders */
-	--select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%236f6b67' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); /* ink-3 */
-	--select-chevron-strong: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%2325211d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); /* ink */
+	--ink: oklch(0.205 0 0); /* primary text */
+	--ink-2: oklch(0.44 0 0); /* secondary text */
+	--ink-3: oklch(0.53 0 0); /* meta, placeholders */
+	--select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%236c6c6c' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); /* ink-3 */
+	--select-chevron-strong: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23171717' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); /* ink */
 
-	/* accent — ink blue, used sparingly */
-	--accent: oklch(0.5 0.1 255);
-	--accent-ink: oklch(0.99 0.004 85);
-	--accent-soft: oklch(0.94 0.025 255);
-	--focus: oklch(0.5 0.1 255 / 0.35);
+	/* accent — ink itself: near-black on light, near-white on dark */
+	--accent: oklch(0.205 0 0);
+	--accent-ink: oklch(0.985 0 0);
+	--accent-soft: oklch(0.93 0 0);
+	--focus: oklch(0.45 0 0 / 0.3);
 
 	/* workflow states — same L/C, hue varies */
-	--st-triage: oklch(0.62 0.02 70);
-	--st-backlog: oklch(0.62 0.02 70);
+	--st-triage: oklch(0.62 0 0);
+	--st-backlog: oklch(0.62 0 0);
 	--st-aligning: oklch(0.58 0.11 300);
 	--st-ready: oklch(0.58 0.11 245);
 	--st-progress: oklch(0.635 0.12 75);
 	--st-blocked: oklch(0.58 0.14 25);
 	--st-review: oklch(0.62 0.13 50);
 	--st-done: oklch(0.58 0.11 150);
-	--st-canceled: oklch(0.625 0.01 70);
+	--st-canceled: oklch(0.625 0 0);
 
 	/* feedback */
 	--danger: oklch(0.54 0.15 25);
@@ -52,8 +51,8 @@
 	--viz-4: #eda100;
 
 	/* type */
-	--font: 'IBM Plex Sans', -apple-system, 'Segoe UI', system-ui, sans-serif;
-	--mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+	--font: 'Geist', -apple-system, 'Segoe UI', system-ui, sans-serif;
+	--mono: 'Geist Mono', ui-monospace, Menlo, monospace;
 	--serif: 'Newsreader', Georgia, serif; /* the record: issue titles, documents, comments */
 	--t-xs: 11px;
 	--t-sm: 12.5px;
@@ -74,36 +73,37 @@
 	--s10: 40px;
 
 	/* shape */
-	--r-sm: 5px;
-	--r: 8px;
-	--r-lg: 12px;
-	--shadow-1: 0 1px 2px oklch(0.3 0.02 70 / 0.06);
-	--shadow-2: 0 8px 28px oklch(0.3 0.02 70 / 0.12), 0 1px 2px oklch(0.3 0.02 70 / 0.06);
+	--r-sm: 6px;
+	--r: 10px;
+	--r-lg: 14px;
+	--shadow-1: 0 1px 2px oklch(0 0 0 / 0.06);
+	--shadow-2: 0 8px 28px oklch(0 0 0 / 0.1), 0 1px 2px oklch(0 0 0 / 0.06);
 
 	/* motion */
 	--ease: cubic-bezier(0.2, 0, 0, 1);
-	--dur: 140ms;
+	--dur: 160ms;
+	--dur-slow: 260ms;
 }
 
 /* Dark: same roles re-valued, for an explicit choice or the OS preference. */
 :root[data-theme='dark'],
 [data-theme='dark'] {
 	color-scheme: dark;
-	--paper: oklch(0.2 0.006 70);
-	--surface: oklch(0.235 0.006 70);
-	--sunken: oklch(0.18 0.006 70);
-	--hover: oklch(0.27 0.007 70);
-	--line: oklch(0.29 0.007 70);
-	--line-strong: oklch(0.36 0.008 70);
-	--ink: oklch(0.93 0.006 85);
-	--ink-2: oklch(0.74 0.008 85);
-	--ink-3: oklch(0.625 0.008 85);
-	--select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%238a8782' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-	--select-chevron-strong: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23eae8e3' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-	--accent: oklch(0.72 0.1 255);
-	--accent-ink: oklch(0.2 0.006 70);
-	--accent-soft: oklch(0.32 0.04 255);
-	--focus: oklch(0.72 0.1 255 / 0.4);
+	--paper: oklch(0.2 0 0);
+	--surface: oklch(0.235 0 0);
+	--sunken: oklch(0.175 0 0);
+	--hover: oklch(0.275 0 0);
+	--line: oklch(0.29 0 0);
+	--line-strong: oklch(0.36 0 0);
+	--ink: oklch(0.93 0 0);
+	--ink-2: oklch(0.74 0 0);
+	--ink-3: oklch(0.625 0 0);
+	--select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23878787' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+	--select-chevron-strong: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23e8e8e8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+	--accent: oklch(0.93 0 0);
+	--accent-ink: oklch(0.2 0 0);
+	--accent-soft: oklch(0.31 0 0);
+	--focus: oklch(0.8 0 0 / 0.35);
 	--danger: oklch(0.7 0.15 25);
 	--danger-soft: oklch(0.3 0.05 25);
 	--ok-soft: oklch(0.3 0.04 150);
@@ -121,21 +121,21 @@
 @media (prefers-color-scheme: dark) {
 	:root:not([data-theme='light']) {
 		color-scheme: dark;
-		--paper: oklch(0.2 0.006 70);
-		--surface: oklch(0.235 0.006 70);
-		--sunken: oklch(0.18 0.006 70);
-		--hover: oklch(0.27 0.007 70);
-		--line: oklch(0.29 0.007 70);
-		--line-strong: oklch(0.36 0.008 70);
-		--ink: oklch(0.93 0.006 85);
-		--ink-2: oklch(0.74 0.008 85);
-		--ink-3: oklch(0.625 0.008 85);
-		--select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%238a8782' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-		--select-chevron-strong: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23eae8e3' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-		--accent: oklch(0.72 0.1 255);
-		--accent-ink: oklch(0.2 0.006 70);
-		--accent-soft: oklch(0.32 0.04 255);
-		--focus: oklch(0.72 0.1 255 / 0.4);
+		--paper: oklch(0.2 0 0);
+		--surface: oklch(0.235 0 0);
+		--sunken: oklch(0.175 0 0);
+		--hover: oklch(0.275 0 0);
+		--line: oklch(0.29 0 0);
+		--line-strong: oklch(0.36 0 0);
+		--ink: oklch(0.93 0 0);
+		--ink-2: oklch(0.74 0 0);
+		--ink-3: oklch(0.625 0 0);
+		--select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23878787' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+		--select-chevron-strong: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23e8e8e8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+		--accent: oklch(0.93 0 0);
+		--accent-ink: oklch(0.2 0 0);
+		--accent-soft: oklch(0.31 0 0);
+		--focus: oklch(0.8 0 0 / 0.35);
 		--danger: oklch(0.7 0.15 25);
 		--danger-soft: oklch(0.3 0.05 25);
 		--ok-soft: oklch(0.3 0.04 150);
@@ -223,6 +223,54 @@ select {
 	scrollbar-color: var(--line-strong) transparent;
 }
 
+/* Motion: every control eases between its states instead of snapping. A
+   component that sets its own transition overrides this (scoped styles win). */
+a,
+button,
+summary,
+[role='button'],
+[role='tab'],
+[role='radio'],
+[role='menuitem'],
+[role='option'] {
+	transition:
+		background-color var(--dur) var(--ease),
+		border-color var(--dur) var(--ease),
+		color var(--dur) var(--ease),
+		box-shadow var(--dur) var(--ease),
+		opacity var(--dur) var(--ease);
+}
+@keyframes pop-in {
+	from {
+		opacity: 0;
+		transform: translateY(-4px) scale(0.98);
+	}
+}
+@keyframes fade-in {
+	from {
+		opacity: 0;
+	}
+}
+/* Light ↔ dark cross-fades (lib/theme.js starts the view transition). */
+::view-transition-old(root),
+::view-transition-new(root) {
+	animation-duration: var(--dur-slow);
+	animation-timing-function: var(--ease);
+}
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		transition-duration: 0.01ms !important;
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+	}
+	::view-transition-old(root),
+	::view-transition-new(root) {
+		animation: none;
+	}
+}
+
 /* shared building blocks */
 .btn {
 	display: inline-flex;
@@ -237,7 +285,12 @@ select {
 	font-size: var(--t-sm);
 	font-weight: 500;
 	white-space: nowrap;
-	transition: background 0.12s, border-color 0.12s, filter 0.12s;
+	transition:
+		background-color var(--dur) var(--ease),
+		border-color var(--dur) var(--ease),
+		color var(--dur) var(--ease),
+		filter var(--dur) var(--ease),
+		transform var(--dur) var(--ease);
 }
 .btn:hover {
 	background: var(--hover);
@@ -248,7 +301,10 @@ select {
 	color: var(--accent-ink);
 }
 .btn.primary:hover {
-	filter: brightness(0.92);
+	filter: opacity(0.86);
+}
+.btn:active {
+	transform: scale(0.98);
 }
 .btn.ghost {
 	background: transparent;
@@ -331,6 +387,8 @@ select {
 	flex-direction: column;
 	max-height: 300px;
 	overflow-y: auto;
+	transform-origin: top;
+	animation: pop-in var(--dur) var(--ease);
 }
 .dd-item {
 	display: flex;
@@ -389,8 +447,8 @@ select {
 	box-sizing: border-box;
 	outline: none;
 	transition:
-		border-color 0.12s,
-		box-shadow 0.12s;
+		border-color var(--dur) var(--ease),
+		box-shadow var(--dur) var(--ease);
 }
 .textarea {
 	resize: vertical;
@@ -472,6 +530,7 @@ select[size]:not([size='1']) {
 	flex: 1;
 	min-height: 0;
 	overflow: auto;
+	animation: fade-in var(--dur-slow) var(--ease);
 }
 
 /* ============================================================
